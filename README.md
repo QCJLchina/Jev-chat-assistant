@@ -2,7 +2,7 @@
 
 **版本：v1.0.0**
 
-本项目是基于开源项目https://github.com/Liyucheng1997/332_lab-jev-chat的判断题库与分析流程进行的 Windows PC 端再开发。
+本项目是基于开源项目https://github.com/Liyucheng1997/332_lab-jev-chat 的判断题库与分析流程进行的 Windows PC 端再开发。
 
 Windows 版可框选桌面上的聊天区域，使用 UI Automation 与本地 OCR 识别可见文字，通过 Jev 分析对话；也可配置回复模型生成三条候选回复，再由 Jev 排序。候选回复只供查看和复制，不会自动填入或发送。
 
