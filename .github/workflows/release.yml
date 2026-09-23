@@ -99,10 +99,10 @@ jobs:
         run: |
           $zip = "release-assets/Jev对话助手-v$env:APP_VERSION-windows-x64.zip"
           $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY --clobber
-          } else {
-            gh release create $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY `
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
               --title "Jev 对话助手 $env:RELEASE_TAG" --generate-notes --verify-tag
+            if ($LASTEXITCODE -ne 0) { throw "创建 Release $env:RELEASE_TAG 失败" }
           }
-          if ($LASTEXITCODE -ne 0) { throw "创建或更新 Release $env:RELEASE_TAG 失败" }
+          gh release upload $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw "上传发布包到 Release $env:RELEASE_TAG 失败" }
