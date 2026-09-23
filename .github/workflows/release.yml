@@ -74,7 +74,7 @@ jobs:
           }
           $assetsDir = Join-Path $PWD 'release-assets'
           New-Item -ItemType Directory -Force -Path $assetsDir | Out-Null
-          $zip = Join-Path $assetsDir "Jev对话助手-v$env:APP_VERSION-windows-x64.zip"
+          $zip = Join-Path $assetsDir "Jev-Chat-Assistant-v$env:APP_VERSION-windows-x64.zip"
           Compress-Archive -LiteralPath $packageDir -DestinationPath $zip -Force
           if (!(Test-Path -LiteralPath $zip -PathType Leaf) -or (Get-Item -LiteralPath $zip).Length -eq 0) {
             throw "发布压缩包缺失或为空：$zip"
@@ -97,7 +97,8 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.version }}
         shell: pwsh
         run: |
-          $zip = "release-assets/Jev对话助手-v$env:APP_VERSION-windows-x64.zip"
+          $zip = "release-assets/Jev-Chat-Assistant-v$env:APP_VERSION-windows-x64.zip"
+          $assetName = [System.IO.Path]::GetFileName($zip)
           $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
@@ -106,3 +107,11 @@ jobs:
           }
           gh release upload $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY --clobber
           if ($LASTEXITCODE -ne 0) { throw "上传发布包到 Release $env:RELEASE_TAG 失败" }
+          $assetsJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" --jq '.assets'
+          if ($LASTEXITCODE -ne 0) { throw "读取 Release $env:RELEASE_TAG 附件失败" }
+          $assets = $assetsJson | ConvertFrom-Json
+          $asset = $assets | Where-Object { $_.name -ceq $assetName } | Select-Object -First 1
+          if (!$asset) { throw "Release 附件未找到：$assetName" }
+          $expectedSize = (Get-Item -LiteralPath $zip).Length
+          if ([long]$asset.size -ne [long]$expectedSize) { throw "Release 附件大小不匹配：$assetName" }
+          Write-Host "已验证 Release 附件：$assetName ($expectedSize bytes)"
