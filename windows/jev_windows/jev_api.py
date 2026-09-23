@@ -6,7 +6,7 @@ import time
 import urllib.error
 import urllib.request
 
-from tools.jev.questions import JUDGE_QUESTIONS, build_state
+from tools.jev.questions import JUDGE_QUESTIONS, build_rank_question, build_state
 
 from .models import Analysis, ChatSnapshot
 
@@ -93,4 +93,54 @@ def judge(snapshot: ChatSnapshot, relationship: str, key: str) -> Analysis:
         tension_resolved=_number(answers, "tension_resolved", "noul", "answer"),
         latency_ms=int((time.monotonic() - start) * 1000),
     )
+
+
+def recommend_replies(
+    snapshot: ChatSnapshot,
+    relationship: str,
+    candidates: list[str],
+    key: str,
+) -> list[dict]:
+    """Return Jev's original per-candidate probabilities and selected confidence."""
+    if len(candidates) != 3:
+        raise ValueError("recommend_replies expects exactly three candidates")
+    response = _post(
+        key,
+        {
+            "model": JEV_MODEL,
+            "state": _state(snapshot, relationship),
+            "questions": build_rank_question(candidates),
+        },
+    )
+    answer = (response.get("answers") or {}).get("best_reply") or {}
+    keys = ["reply_a", "reply_b", "reply_c"]
+    selected = str(answer.get("choice") or answer.get("answer") or "")
+    confidence = answer.get("confidence")
+    confidence = float(confidence) if isinstance(confidence, (int, float)) else None
+    raw_probabilities = answer.get("probabilities") or {}
+    probabilities = {
+        item: float(raw_probabilities[item])
+        for item in keys
+        if isinstance(raw_probabilities.get(item), (int, float))
+    }
+    scored = [(index, probabilities.get(item)) for index, item in enumerate(keys)]
+    present = [(index, score) for index, score in scored if score is not None]
+    winner = None
+    if present:
+        highest = max(score for _, score in present)
+        tied = [index for index, score in present if score == highest]
+        selected_index = keys.index(selected) if selected in keys else None
+        winner = selected_index if selected_index in tied else tied[0]
+    elif selected in keys:
+        winner = keys.index(selected)
+
+    return [
+        {
+            "text": text,
+            "probability": probabilities.get(item),
+            "confidence": confidence if item == selected else None,
+            "recommended": index == winner,
+        }
+        for index, (item, text) in enumerate(zip(keys, candidates))
+    ]
 

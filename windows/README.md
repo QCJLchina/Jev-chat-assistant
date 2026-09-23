@@ -1,18 +1,18 @@
-# Jev 微信助手（Windows）
+# Jev 对话助手（Windows）
 
-Windows 版在电脑版微信旁运行，不读取微信数据库、不注入微信进程，也不调用微信接口。它优先使用 Windows UI Automation 读取当前可见聊天文字；若微信未暴露控件文本，则截取用户明确框选的聊天区域并在本机 OCR。识别结果先发送给 TypeSafe Jev 做结构化判断；配置 DeepSeek API 后，再根据 Jev 判断生成三条建议回复。
+Windows 桌面版使用 Vue 3 + TypeScript 界面和 pywebview 窗口，保留 Python 本地 OCR、Jev 判断、Windows 凭据管理器和本地安全检查。它可框选桌面上的任意聊天应用，不要求微信运行；不读取微信数据库，不注入微信进程，也不调用微信接口。
 
-建议回复只能点击“复制”，程序没有操作微信输入框、点击“发送”或模拟 Enter 的路径。检测到转账、红包、收款、支付等交易词时会拒绝分析。
+回复模型支持三种接口协议：`openai-chat`（`/chat/completions`）、`openai-responses`（`/responses`）和 `anthropic`（`/messages`）。Jev 会比较模型生成的三条候选回复，页面显示原始推荐概率，并在最高推荐项后标记红色“推荐”。不同服务可以保存为多套配置并切换。候选回复只能复制，不会自动填写或发送；交易相关对话仍会拒绝分析。
 
 ## 环境
 
 - Windows 10/11（x64）
-- 电脑版微信进程名 `Weixin.exe` 或 `WeChat.exe`
-- Python 3.11（仅源码运行/构建需要）
-- TypeSafe/Jev API Key
-- DeepSeek API Key（可选；未配置时仍可只做 Jev 判断）
+- Python 3.14、Node.js 20+ 和 npm（源码运行/构建）
+- Microsoft Edge WebView2 Runtime
+- TypeSafe / Jev API Key
+- 可选的回复模型 API Key
 
-## 源码运行
+## 安装和启动
 
 在仓库根目录打开 PowerShell：
 
@@ -21,39 +21,41 @@ powershell -ExecutionPolicy Bypass -File .\windows\install.ps1
 powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 ```
 
-首次启动：
+安装脚本会安装 Vue 依赖并构建前端，再安装 Python 依赖。首次使用时，在设置页保存 TypeSafe 控制台生成的 Jev API Key；在“回复模型”中添加模型配置、选择接口协议、填写接口地址和 API Key，并选择或手动输入模型名称。地址和密钥填写后会尝试读取模型列表；列表不可用时仍可手动输入。连接测试只发送固定的短提示，不携带聊天内容。
 
-1. 打开电脑版微信并进入一个普通文字聊天。
-2. 在“设置”里保存 TypeSafe 控制台生成的 Jev API 密钥。
-3. 如需建议回复，在同一设置窗口填写 DeepSeek API 密钥。默认模型是 `deepseek-flash`，也可改成 `deepseek-v4-pro`。
-4. 点击“框选聊天区”，只框消息气泡区域，不要包含左侧会话列表和底部输入区。
-5. 点击“分析当前微信对话”。
+接口地址可填基础地址（如 `https://host/v1`），也可填完整接口地址。程序会按所选协议推导请求端点：OpenAI Chat 使用 Bearer 认证，OpenAI Responses 使用 Bearer 认证，Anthropic 使用 `x-api-key` 和 `anthropic-version` 请求头。
 
-两枚密钥都写入 Windows 凭据管理器，`settings.json` 不保存密钥。DeepSeek 留空时，程序只显示 Jev 判断，不会报错。
+回复模型密钥按配置分别保存到 Windows 凭据管理器；Jev 密钥也保存在凭据管理器。设置文件 `%APPDATA%\JevChatAssistant\settings.json` 只存非机密配置。旧版 DeepSeek 模型、密钥、关系说明、白名单和聊天框选坐标会在升级后继续可用；旧 DeepSeek API 密钥首次读取时迁移到对应模型凭据项。
 
-分析开始时助手窗口会短暂隐藏，这是为了避免置顶窗口遮住微信后被 OCR 当成聊天内容。界面会依次显示“读取微信 → Jev 判断 → DeepSeek 建议”，不会再用一个状态覆盖整个过程。
+## 使用
 
-框选坐标相对于微信客户区保存。微信窗口尺寸或缩放发生明显变化后，应重新校准。
+1. 打开任意聊天应用并进入普通文字聊天。
+2. 首次使用或窗口/显示器位置变化后，点击“框选对话区域”，拖选屏幕上的聊天消息。
+3. 选择要生成建议的回复模型，点击“分析当前选区”。
+4. 查看 Jev 判断、候选推荐度与红色推荐项；点击复制后自行检查、修改和发送。
 
-## 打包 Windows 应用
+分析期间助手窗口会短暂隐藏，避免 OCR 将助手自身识别为聊天内容。框选区域按虚拟桌面坐标保存；旧版微信客户区坐标会保留，但升级后需重新框选一次以使用通用桌面采集。
+
+## 构建分发程序
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-产物位于 `dist\Jev微信助手\Jev微信助手.exe`。PyInstaller 的文件夹模式包含 OCR 模型及运行库，可直接复制整个文件夹到同架构 Windows 机器。
+产物位于 `dist\Jev对话助手\Jev对话助手.exe`。PyInstaller 会将 Vue 静态资源、OCR 模型和 Python 运行依赖一起打包。目标电脑需要 Microsoft Edge WebView2 Runtime；缺少时程序会显示提示。
 
-## 隐私和边界
+## 隐私边界
 
-- 当前框选区域的可见文字会交给 TypeSafe Jev；配置 DeepSeek 后，对话和 Jev 判断也会交给 DeepSeek 用于生成建议。OCR 本身完全在本机执行。
-- 不读本地聊天数据库，不绕过微信权限，不 hook、不注入。
-- 配置文件位于 `%APPDATA%\JevChatAssistant\settings.json`，其中不含密钥。
-- 可在设置中配置会话标题白名单。
-- 目前只面向普通文字对话；图片、语音、引用卡片等不会被可靠还原。
+- OCR 在本机执行；点击分析后，识别出的聊天文本会发送给 TypeSafe Jev。启用回复模型时，对话和 Jev 判断也会发送给所选服务生成候选回复。
+- 模型列表和连接测试只使用当前配置的接口地址、API Key 和模型信息，不会发送聊天内容。
+- 界面桥接不会向前端返回已保存密钥；API Key 按配置 ID 存储在 Windows 凭据管理器，也不会写入日志或 `settings.json`。
+- 不读取本地聊天数据库，不操作微信输入框，不自动发送。转账、红包、收款、支付等交易内容会拒绝分析。
+- 当前面向可见的普通文字聊天；图片、语音和引用卡片不会被可靠还原。
 
 ## 常见问题
 
-- **提示 Jev / TypeSafe 密钥无效（401）**：请填写 `console.typesafe.ai` 控制台生成的 API Key，不能填写 OpenRouter 密钥、模型名或账户 ID。
-- **提示 DeepSeek 密钥无效或余额不足**：在设置中更新 DeepSeek API 密钥或充值；Jev 判断仍然会保留显示。
-- **识别结果出现“候选回复”“Jev 判断”等助手界面文字**：这是旧版置顶窗口被截进聊天区的缺陷，新版会在截图期间自动隐藏。请确认运行的是最新构建，并重新分析。
-- **“我/对方”仍有少量颠倒**：重新框选，只包含中间消息气泡区域，不要包含左侧会话列表、顶部标题和底部输入框。
+- **Jev 密钥无效**：填写 `console.typesafe.ai` 控制台生成的 API Key。
+- **无法加载模型列表**：有些代理或服务不提供模型列表端点；可直接手动输入服务端支持的模型 ID。
+- **连接测试失败**：核对协议、基础地址、API Key 和模型名称。Anthropic 配置应选择 `anthropic`；Responses 接口应选择 `openai-responses`。
+- **无法启动桌面窗口**：安装或修复 Microsoft Edge WebView2 Runtime 后重试。
+- **微信文字识别不完整**：重新框选聊天气泡区域，不要包含会话列表、标题或输入区。

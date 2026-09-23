@@ -153,3 +153,28 @@ def capture_chat(window: WeChatWindow, relative_chat_rect: Rect) -> ChatSnapshot
         raise RuntimeError("没有识别到聊天文字，请确认聊天窗口可见并重新框选聊天区域。")
     raw_text = "\n".join(box.text for box in boxes)
     return ChatSnapshot(window.title or "微信聊天", messages, raw_text)
+
+
+def capture_desktop_chat(screen_rect: Rect) -> ChatSnapshot:
+    """OCR a selected desktop region without requiring a particular app."""
+    from .windows_api import virtual_screen_rect, window_title_at
+
+    desktop = virtual_screen_rect()
+    if (
+        screen_rect.width < 80
+        or screen_rect.height < 40
+        or screen_rect.left < desktop.left
+        or screen_rect.top < desktop.top
+        or screen_rect.right > desktop.right
+        or screen_rect.bottom > desktop.bottom
+    ):
+        raise RuntimeError("框选区域已超出屏幕范围，请重新框选。")
+    boxes = _ocr_boxes(screen_rect)
+    messages = _boxes_to_messages(boxes, screen_rect)
+    if not messages:
+        raise RuntimeError("选区内没有识别到对话文字，请重新框选消息区域。")
+    title = window_title_at(
+        screen_rect.left + screen_rect.width // 2,
+        screen_rect.top + screen_rect.height // 2,
+    ) or "桌面对话"
+    return ChatSnapshot(title, messages, "\n".join(box.text for box in boxes))

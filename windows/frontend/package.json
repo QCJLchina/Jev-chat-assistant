@@ -1,0 +1,9 @@
+{
+  "name": "jev-windows-ui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": { "dev": "vite --host 127.0.0.1", "build": "vue-tsc -b && vite build", "preview": "vite preview --host 127.0.0.1" },
+  "dependencies": { "@lucide/vue": "^1.47.0", "@vitejs/plugin-vue": "^5.2.4", "vite": "^6.1.0", "vue": "^3.5.13" },
+  "devDependencies": { "@types/node": "^22.13.4", "typescript": "~5.7.2", "vue-tsc": "^2.2.0" }
+}

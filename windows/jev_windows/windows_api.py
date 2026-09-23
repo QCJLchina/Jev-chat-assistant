@@ -5,6 +5,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 
 import win32gui
+import win32con
 import win32process
 from PIL import ImageGrab
 
@@ -25,6 +26,10 @@ _KERNEL32.QueryFullProcessImageNameW.argtypes = [
 _KERNEL32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
 _KERNEL32.CloseHandle.restype = wintypes.BOOL
+
+_USER32 = ctypes.WinDLL("user32", use_last_error=True)
+_USER32.GetSystemMetrics.argtypes = [ctypes.c_int]
+_USER32.GetSystemMetrics.restype = ctypes.c_int
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,21 @@ def client_rect_on_screen(hwnd: int) -> Rect:
     left, top = win32gui.ClientToScreen(hwnd, (0, 0))
     client = win32gui.GetClientRect(hwnd)
     return Rect(left, top, left + client[2], top + client[3])
+
+
+def virtual_screen_rect() -> Rect:
+    """Bounds of all attached monitors in virtual-desktop coordinates."""
+    left = _USER32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+    top = _USER32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+    width = _USER32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+    height = _USER32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+    return Rect(left, top, left + width, top + height)
+
+
+def window_title_at(x: int, y: int) -> str:
+    hwnd = win32gui.WindowFromPoint((x, y))
+    root = win32gui.GetAncestor(hwnd, win32con.GA_ROOT)
+    return win32gui.GetWindowText(root or hwnd).strip()
 
 
 def screenshot(rect: Rect):

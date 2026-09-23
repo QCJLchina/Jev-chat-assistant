@@ -10,9 +10,14 @@ local.properties
 
 # Windows desktop build
 .venv-windows/
+.venv-windows-py314/
 /dist/
 /*.spec
 .pytest_cache/
+windows/frontend/node_modules/
+windows/frontend/dist/
+windows/frontend/.npm-cache/
+.npm-cache/
 
 # Machine-specific
 env.ps1

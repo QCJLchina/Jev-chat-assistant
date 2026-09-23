@@ -1,4 +1,6 @@
-# Jev 聊天助手 (Jev Chat Assistant)
+# Jev对话助手 (Jev Chat Assistant)
+
+项目仓库：[QCJLchina/Jev-chat-assistant](https://github.com/QCJLchina/Jev-chat-assistant)
 
 一个**非侵入式**的实时对话理解与回复辅助层——挂在任意聊天窗口旁边，读懂对方在说什么，用 [TypeSafe **Jev**](https://typesafe.ai/) 判断模型给出「对方真实意图 / 危险等级 / 该不该马上回 / 最佳动作」，再用一个生成式模型起草 3 条候选回复并让 Jev 排序，最后以半透明悬浮窗展示，一键**填入**输入框。
 
@@ -70,9 +72,9 @@ adb install -r apk/jev-assistant-v1.1-release.apk
 
 之前装过 debug 包的要先卸载再装（签名不同，覆盖会失败），卸载会清掉已填的密钥和设置。小米 / HyperOS 重装后悬浮窗权限会被重置，装完按主页向导再开一次。
 
-## Windows 电脑版微信
+## Windows 桌面版
 
-仓库现已包含独立的 Windows 桌面版，支持 `Weixin.exe` / `WeChat.exe`。它优先读取 Windows UI Automation；电脑版微信不暴露消息控件时，自动改用本地 OCR 识别用户框选的可见聊天区。Windows 版直连 TypeSafe Jev API 做结构化判断；可选配置 DeepSeek API，根据 Jev 判断生成三条建议回复。建议只能复制，不会自动填写或发送。
+Windows 版「Jev对话助手」可框选桌面上的任意聊天应用区域，并在本机 OCR 识别。Vue 3 + TypeScript 界面由 pywebview 承载；回复模型支持 `openai-chat`、`openai-responses` 与 `anthropic` 协议，可保存多套配置。Jev 会为三条候选回复给出推荐度，最高项标记红色“推荐”。建议只能复制，不会自动填写或发送。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\windows\install.ps1
@@ -83,7 +85,7 @@ powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
-# 产物：dist\Jev微信助手\Jev微信助手.exe
+# 产物：dist\Jev对话助手\Jev对话助手.exe
 ```
 
 详细配置、隐私边界和使用步骤见 [`windows/README.md`](windows/README.md)。
@@ -144,10 +146,10 @@ powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 **1 群已满，不要再扫。** 2、3、4 群任选一个加入，**请勿重复加入**，内容完全一样。
 
 <table align="center"><tr>
-  <td align="center"><img src="docs/images/wechat-group-1.png" width="170" alt="jev-chat-JARVIS 1 群（已满）" /><br/><b>1 群 · 已满</b></td>
-  <td align="center"><img src="docs/images/wechat-group-2.png" width="170" alt="jev-chat-JARVIS 2 群" /><br/>2 群</td>
-  <td align="center"><img src="docs/images/wechat-group-3.png" width="170" alt="jev-chat-JARVIS 3 群" /><br/>3 群</td>
-  <td align="center"><img src="docs/images/wechat-group-4.png" width="170" alt="jev-chat-JARVIS 4 群" /><br/>4 群</td>
+  <td align="center"><img src="docs/images/wechat-group-1.png" width="170" alt="Jev-chat-assistant 1 群（已满）" /><br/><b>1 群 · 已满</b></td>
+  <td align="center"><img src="docs/images/wechat-group-2.png" width="170" alt="Jev-chat-assistant 2 群" /><br/>2 群</td>
+  <td align="center"><img src="docs/images/wechat-group-3.png" width="170" alt="Jev-chat-assistant 3 群" /><br/>3 群</td>
+  <td align="center"><img src="docs/images/wechat-group-4.png" width="170" alt="Jev-chat-assistant 4 群" /><br/>4 群</td>
 </tr></table>
 
-二维码 7 天有效（本批到 2026-09-28），过期了请开一个 [issue](https://github.com/Finderchangchang/jev-chat-JARVIS/issues) 留言，会更新。
+二维码 7 天有效（本批到 2026-09-28），过期了请开一个 [issue](https://github.com/QCJLchina/Jev-chat-assistant/issues) 留言，会更新。
