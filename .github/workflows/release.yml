@@ -31,13 +31,13 @@ jobs:
       - name: 配置 Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
+          python-version: '3.12'
 
       - name: 创建 Python 环境并运行测试
         shell: pwsh
         run: |
-          python -m venv .venv-windows-py314
-          $python = Join-Path $PWD '.venv-windows-py314/Scripts/python.exe'
+          python -m venv .venv-windows-py312
+          $python = Join-Path $PWD '.venv-windows-py312/Scripts/python.exe'
           & $python -m pip install --upgrade pip
           if ($LASTEXITCODE -ne 0) { throw '升级 pip 失败' }
           & $python -m pip install -r windows/requirements-dev.txt
@@ -67,14 +67,14 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.version }}
         shell: pwsh
         run: |
-          $packageDir = Join-Path $PWD 'dist/Jev微信助手'
-          $exe = Join-Path $packageDir 'Jev微信助手.exe'
+          $packageDir = Join-Path $PWD 'dist/Jev对话助手'
+          $exe = Join-Path $packageDir 'Jev对话助手.exe'
           if (!(Test-Path -LiteralPath $exe -PathType Leaf) -or (Get-Item -LiteralPath $exe).Length -eq 0) {
             throw "构建产物缺失或为空：$exe"
           }
           $assetsDir = Join-Path $PWD 'release-assets'
           New-Item -ItemType Directory -Force -Path $assetsDir | Out-Null
-          $zip = Join-Path $assetsDir "Jev微信助手-v$env:APP_VERSION-windows-x64.zip"
+          $zip = Join-Path $assetsDir "Jev对话助手-v$env:APP_VERSION-windows-x64.zip"
           Compress-Archive -LiteralPath $packageDir -DestinationPath $zip -Force
           if (!(Test-Path -LiteralPath $zip -PathType Leaf) -or (Get-Item -LiteralPath $zip).Length -eq 0) {
             throw "发布压缩包缺失或为空：$zip"
@@ -85,7 +85,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: Jev微信助手-${{ steps.version.outputs.version }}-windows-x64
+          name: Jev对话助手-${{ steps.version.outputs.version }}-windows-x64
           path: release-assets/*.zip
           retention-days: 14
 
@@ -97,12 +97,12 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.version }}
         shell: pwsh
         run: |
-          $zip = "release-assets/Jev微信助手-v$env:APP_VERSION-windows-x64.zip"
+          $zip = "release-assets/Jev对话助手-v$env:APP_VERSION-windows-x64.zip"
           $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY --clobber
           } else {
             gh release create $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY `
-              --title "Jev 微信助手 $env:RELEASE_TAG" --generate-notes --verify-tag
+              --title "Jev 对话助手 $env:RELEASE_TAG" --generate-notes --verify-tag
           }
           if ($LASTEXITCODE -ne 0) { throw "创建或更新 Release $env:RELEASE_TAG 失败" }

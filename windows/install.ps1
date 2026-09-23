@@ -1,16 +1,16 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$VenvPath = Join-Path $ProjectRoot ".venv-windows-py314"
+$VenvPath = Join-Path $ProjectRoot ".venv-windows-py312"
 
 if (-not (Test-Path (Join-Path $VenvPath "Scripts\python.exe"))) {
     $PythonVersion = & python --version 2>&1
-    if ($LASTEXITCODE -eq 0 -and "$PythonVersion" -match "Python 3\.14") {
+    if ($LASTEXITCODE -eq 0 -and "$PythonVersion" -match "Python 3\.12") {
         & python -m venv $VenvPath
     }
     elseif (Get-Command uv -ErrorAction SilentlyContinue) {
-        & uv venv --python 3.14 $VenvPath
+        & uv venv --python 3.12 $VenvPath
     }
-    if (-not (Test-Path (Join-Path $VenvPath "Scripts\python.exe"))) { throw "需要 PATH 中的 Python 3.14 或 uv 管理的 Python 3.14。" }
+    if (-not (Test-Path (Join-Path $VenvPath "Scripts\python.exe"))) { throw "需要 PATH 中的 Python 3.12 或 uv 管理的 Python 3.12。" }
 }
 
 $PythonExe = Join-Path $VenvPath "Scripts\python.exe"

@@ -11,6 +11,7 @@ local.properties
 # Windows desktop build
 .venv-windows/
 .venv-windows-py314/
+.venv-windows-py312/
 /dist/
 /*.spec
 .pytest_cache/

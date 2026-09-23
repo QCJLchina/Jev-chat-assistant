@@ -10,7 +10,7 @@ Windows 版可框选桌面上的聊天区域，使用 UI Automation 与本地 OC
 
 - Windows 10/11（x64）
 - Microsoft Edge WebView2 Runtime
-- 源码运行或构建需要 Python 3.14、Node.js 20+ 和 npm
+- 源码运行或构建需要 Python 3.12、Node.js 20+ 和 npm
 - 首次使用需要 TypeSafe / Jev API Key；回复模型 API Key 可选
 
 ## 安装与启动

@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$PythonExe = Join-Path $ProjectRoot ".venv-windows-py314\Scripts\pythonw.exe"
+$PythonExe = Join-Path $ProjectRoot ".venv-windows-py312\Scripts\pythonw.exe"
 $FrontendPath = Join-Path $PSScriptRoot "frontend"
 
 if (-not (Test-Path $PythonExe)) {

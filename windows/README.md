@@ -7,7 +7,7 @@ Windows 桌面版使用 Vue 3 + TypeScript 界面和 pywebview 窗口，保留 P
 ## 环境
 
 - Windows 10/11（x64）
-- Python 3.14、Node.js 20+ 和 npm（源码运行/构建）
+- Python 3.12、Node.js 20+ 和 npm（源码运行/构建）
 - Microsoft Edge WebView2 Runtime
 - TypeSafe / Jev API Key
 - 可选的回复模型 API Key
