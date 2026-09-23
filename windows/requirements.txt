@@ -1,0 +1,5 @@
+Pillow>=10.4,<12
+pywin32>=306
+uiautomation>=2.0.20,<3
+rapidocr-onnxruntime>=1.4.4,<2
+
