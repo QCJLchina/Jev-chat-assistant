@@ -35,6 +35,11 @@ powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 - `tools/jev/`：Jev 题目集、API 客户端与校准脚手架。
 - `LICENSE`：MIT License。
 
+## Contributors
+
+- QCJLchina
+- Codex（AI coding assistant）
+
 ## 来源与许可证
 
 本项目是基于原作者 [Liyucheng1997/332_lab-jev-chat](https://github.com/Liyucheng1997/332_lab-jev-chat) 再开发的独立项目。原项目及其作者的著作权归原作者所有；本仓库所含代码按 [MIT License](LICENSE) 发布。
