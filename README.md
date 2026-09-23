@@ -139,6 +139,11 @@ powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 
 [MIT](LICENSE)
 
+## Contributors
+
+- QCJLchina
+- Codex（AI coding assistant）
+
 ## 交流群 / 需求收集
 
 项目刚起步，想听真实需求：你在哪个聊天 App 上最想要这个副驾？希望它判断什么、怎么提示、什么绝对不能碰？扫码进微信群直接说。

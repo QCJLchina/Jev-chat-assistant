@@ -198,7 +198,7 @@ class DesktopApi:
 
         def overlay() -> None:
             try:
-            root = tk.Tk()
+                root = tk.Tk()
             except Exception as exc:
                 with self._lock:
                     self._state.update(phase="error", status=f"无法启动框选窗口：{exc}")
