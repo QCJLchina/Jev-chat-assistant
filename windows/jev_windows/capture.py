@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .models import ChatSnapshot, Message, Rect
@@ -57,16 +58,18 @@ def _uia_boxes(window: WeChatWindow, area: Rect) -> list[TextBox]:
         return []
 
 
-def _ocr_boxes(area: Rect) -> list[TextBox]:
+def _ocr_boxes(area: Rect, image: object | None = None) -> list[TextBox]:
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as exc:
         raise RuntimeError("未安装本地 OCR 组件，请运行 windows\\install.ps1。") from exc
 
     global _OCR_ENGINE
-    image = screenshot(area)
+    if image is None:
+        image = screenshot(area)
     if _OCR_ENGINE is None:
-        _OCR_ENGINE = RapidOCR()
+        # Keep ONNX from occupying every core while the desktop UI is visible.
+        _OCR_ENGINE = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
     result, _ = _OCR_ENGINE(image)
     boxes: list[TextBox] = []
     for item in result or []:
@@ -155,7 +158,10 @@ def capture_chat(window: WeChatWindow, relative_chat_rect: Rect) -> ChatSnapshot
     return ChatSnapshot(window.title or "微信聊天", messages, raw_text)
 
 
-def capture_desktop_chat(screen_rect: Rect) -> ChatSnapshot:
+def capture_desktop_chat(
+    screen_rect: Rect,
+    capture_frame: Callable[[Rect], tuple[object, str]] | None = None,
+) -> ChatSnapshot:
     """OCR a selected desktop region without requiring a particular app."""
     from .windows_api import virtual_screen_rect, window_title_at
 
@@ -169,12 +175,16 @@ def capture_desktop_chat(screen_rect: Rect) -> ChatSnapshot:
         or screen_rect.bottom > desktop.bottom
     ):
         raise RuntimeError("框选区域已超出屏幕范围，请重新框选。")
-    boxes = _ocr_boxes(screen_rect)
+    if capture_frame is None:
+        image = screenshot(screen_rect)
+        title = window_title_at(
+            screen_rect.left + screen_rect.width // 2,
+            screen_rect.top + screen_rect.height // 2,
+        )
+    else:
+        image, title = capture_frame(screen_rect)
+    boxes = _ocr_boxes(screen_rect, image)
     messages = _boxes_to_messages(boxes, screen_rect)
     if not messages:
         raise RuntimeError("选区内没有识别到对话文字，请重新框选消息区域。")
-    title = window_title_at(
-        screen_rect.left + screen_rect.width // 2,
-        screen_rect.top + screen_rect.height // 2,
-    ) or "桌面对话"
-    return ChatSnapshot(title, messages, "\n".join(box.text for box in boxes))
+    return ChatSnapshot(title or "桌面对话", messages, "\n".join(box.text for box in boxes))

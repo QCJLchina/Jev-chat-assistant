@@ -74,7 +74,7 @@ def test_malformed_reply_payload_is_rejected(monkeypatch):
         ("https://api.anthropic.com/v1/messages", "anthropic", "/v1/models"),
     ],
 )
-def test_model_discovery_uses_protocol_auth_and_preserves_prefix(monkeypatch, base_url, protocol, path):
+def test_model_discovery_is_unauthenticated_and_preserves_prefix(monkeypatch, base_url, protocol, path):
     captured = {}
 
     def fake_open(request, timeout):
@@ -83,14 +83,14 @@ def test_model_discovery_uses_protocol_auth_and_preserves_prefix(monkeypatch, ba
         return io.BytesIO(json.dumps({"data": [{"id": "model-z"}, {"id": "model-a"}]}).encode())
 
     monkeypatch.setattr(deepseek_client.urllib.request, "urlopen", fake_open)
-    assert deepseek_client.list_models(base_url, "secret", protocol=protocol) == ["model-a", "model-z"]
+    assert deepseek_client.list_models(base_url, protocol=protocol) == ["model-a", "model-z"]
     assert urllib.parse.urlsplit(captured["url"]).path == path
     if protocol == "anthropic":
-        assert captured["headers"]["x-api-key"] == "secret"
         assert captured["headers"]["anthropic-version"] == deepseek_client.ANTHROPIC_VERSION
+        assert "x-api-key" not in captured["headers"]
         assert "authorization" not in captured["headers"]
     else:
-        assert captured["headers"]["authorization"] == "Bearer secret"
+        assert "authorization" not in captured["headers"]
 
 
 @pytest.mark.parametrize(

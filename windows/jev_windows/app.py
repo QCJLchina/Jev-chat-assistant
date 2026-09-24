@@ -26,7 +26,13 @@ from .deepseek_client import SUPPORTED_PROTOCOLS, DeepSeekError, generate_sugges
 from .jev_api import judge, recommend_replies
 from .models import Analysis, Rect
 from .safety import assert_safe_chat
-from .windows_api import find_wechat_window, virtual_screen_rect
+from .windows_api import (
+    ensure_dpi_awareness,
+    find_wechat_window,
+    screenshot,
+    virtual_screen_rect,
+    window_title_at,
+)
 from .workflow import capture_without_overlay
 
 
@@ -48,6 +54,13 @@ def _analysis_data(analysis: Analysis | None) -> dict | None:
     }
 
 
+def overlay_geometry(rect: Rect) -> str:
+    # Tk reads a bare negative offset ("-500") as "distance from the right
+    # edge". An explicit "+-500" selects x=-500, which is what secondary
+    # monitors to the left of the primary need.
+    return f"{rect.width}x{rect.height}+{rect.left}+{rect.top}"
+
+
 class DesktopApi:
     """Small, secret-safe bridge between Vue and existing Windows workflows."""
 
@@ -63,6 +76,19 @@ class DesktopApi:
             "suggestions": [],
             "error": "",
         }
+        self._state_revision = 0
+
+    def _set_progress(self, **updates: object) -> None:
+        with self._lock:
+            self._state.update(updates)
+            self._state_revision += 1
+
+    def get_progress(self, known_revision: int = -1) -> dict:
+        with self._lock:
+            revision = self._state_revision
+            if known_revision == revision:
+                return {"revision": revision}
+            return {"revision": revision, **self._state}
 
     def _safe_profile(self, profile: ModelProfile) -> dict:
         return {
@@ -78,8 +104,10 @@ class DesktopApi:
     def get_state(self) -> dict:
         with self._lock:
             state = dict(self._state)
+            revision = self._state_revision
         return {
             **state,
+            "revision": revision,
             "version": __version__,
             "chat_rect": _rect_data(self.settings.chat_rect),
             "chat_rect_mode": self.settings.chat_rect_mode,
@@ -93,17 +121,12 @@ class DesktopApi:
     def fetch_models(self, payload: str | dict) -> dict:
         data = json.loads(payload) if isinstance(payload, str) else payload
         base_url = str(data.get("base_url", "")).strip()
-        profile_id = str(data.get("profile_id", "")).strip()
+        key = str(data.get("api_key", "")).strip()
         protocol = str(data.get("protocol", "openai-chat"))
         if protocol not in SUPPORTED_PROTOCOLS:
             raise ValueError("请选择 openai-chat、openai-responses 或 anthropic 协议。")
-        key = str(data.get("api_key", "")).strip()
-        if not key and profile_id:
-            existing = next((p for p in self.settings.model_profiles if p.id == profile_id), None)
-            if existing and existing.base_url.rstrip("/") == base_url.rstrip("/") and existing.protocol == protocol:
-                key = load_model_api_key(profile_id)
         if not key:
-            raise ValueError("请先填写此接口对应的 API Key。")
+            key = os.environ.get("OPENAI_API_KEY", "").strip()
         return {"models": list_models(base_url, key, protocol=protocol)}
 
     def test_model(self, payload: str | dict) -> dict:
@@ -190,18 +213,18 @@ class DesktopApi:
             client = virtual_screen_rect()
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
-        with self._lock:
-            self._state["phase"] = "calibrating"
-            self._state["status"] = "请在微信聊天窗口拖动框选消息区域"
-        if self.window:
-            self.window.hide()
+        self._set_progress(phase="calibrating", status="请拖动框选桌面聊天消息区域")
 
         def overlay() -> None:
+            # hide/show must not run on the main thread while a js_api call is
+            # in flight: pywebview marshals them back onto the UI thread, which
+            # is currently blocked executing this very bridge call -> deadlock.
+            if self.window:
+                self.window.hide()
             try:
                 root = tk.Tk()
             except Exception as exc:
-                with self._lock:
-                    self._state.update(phase="error", status=f"无法启动框选窗口：{exc}")
+                self._set_progress(phase="error", status=f"无法启动框选窗口：{exc}")
                 if self.window:
                     self.window.show()
                     self.window.restore()
@@ -209,9 +232,7 @@ class DesktopApi:
             root.overrideredirect(True)
             root.attributes("-topmost", True)
             root.attributes("-alpha", 0.28)
-            xpos = f"+{client.left}" if client.left >= 0 else str(client.left)
-            ypos = f"+{client.top}" if client.top >= 0 else str(client.top)
-            root.geometry(f"{client.width}x{client.height}{xpos}{ypos}")
+            root.geometry(overlay_geometry(client))
             canvas = tk.Canvas(root, bg="#111827", highlightthickness=0, cursor="crosshair")
             canvas.pack(fill="both", expand=True)
             canvas.create_text(client.width // 2, 28, text="拖动框选聊天消息区域 · Esc 取消", fill="white", font=("Microsoft YaHei UI", 14, "bold"))
@@ -223,16 +244,11 @@ class DesktopApi:
                     self.settings.chat_rect = rect
                     self.settings.chat_rect_mode = "screen"
                     self.settings.save()
-                    with self._lock:
-                        self._state["status"] = "聊天区已保存，可以开始分析"
-                        self._state["phase"] = "idle"
+                    self._set_progress(status="聊天区已保存，可以开始分析", phase="idle")
                 elif rect:
-                    with self._lock:
-                        self._state["status"] = "框选区域太小，请重新框选聊天消息区域。"
-                        self._state["phase"] = "idle"
+                    self._set_progress(status="框选区域太小，请重新框选聊天消息区域。", phase="idle")
                 else:
-                    with self._lock:
-                        self._state.update(status="已取消框选", phase="idle")
+                    self._set_progress(status="已取消框选", phase="idle")
                 root.destroy()
                 if self.window:
                     self.window.show()
@@ -281,38 +297,53 @@ class DesktopApi:
         profile_key = load_model_api_key(selected_profile.id) if selected_profile else ""
         profile = selected_profile if selected_profile and profile_key else None
 
+        with self._lock:
+            if self._state["phase"] not in {"idle", "error"}:
+                return {"ok": False, "error": "分析正在进行中。"}
+            self._state.update(
+                phase="capturing", status="正在截取对话…助手窗口会短暂隐藏",
+                error="", analysis=None, suggestions=[],
+            )
+            self._state_revision += 1
+
         def worker() -> None:
             try:
-                with self._lock:
-                    self._state.update(phase="capturing", status="正在读取微信…截图时窗口会暂时隐藏", error="", analysis=None, suggestions=[])
                 window = find_wechat_window() if self.settings.chat_rect_mode == "wechat-client" else None
-                snapshot = capture_without_overlay(
-                    lambda: self.window.hide() if self.window else None,
-                    lambda: (self.window.show(), self.window.restore()) if self.window else None,
-                    lambda: (
-                        capture_chat(window, self.settings.chat_rect)
-                        if window is not None
-                        else capture_desktop_chat(self.settings.chat_rect)
-                    ),
-                )
+                hide = lambda: self.window.hide() if self.window else None
+                show = lambda: (self.window.show(), self.window.restore()) if self.window else None
+                if window is not None:
+                    snapshot = capture_without_overlay(
+                        hide, show, lambda: capture_chat(window, self.settings.chat_rect)
+                    )
+                else:
+                    def capture_frame(area: Rect) -> tuple[object, str]:
+                        frame = capture_without_overlay(
+                            hide,
+                            show,
+                            lambda: (
+                                screenshot(area),
+                                window_title_at(area.left + area.width // 2, area.top + area.height // 2),
+                            ),
+                        )
+                        self._set_progress(phase="recognizing", status="截图完成，正在本机识别文字…")
+                        return frame
+
+                    snapshot = capture_desktop_chat(self.settings.chat_rect, capture_frame)
                 assert_safe_chat(snapshot.raw_text)
                 if self.settings.allowed_titles and not any(title in snapshot.title for title in self.settings.allowed_titles):
                     raise RuntimeError(f"当前会话“{snapshot.title}”不在白名单中。")
-                with self._lock:
-                    self._state.update(
-                        phase="judging", status=f"已识别 {len(snapshot.messages)} 条消息，正在调用 Jev 判断…",
-                        preview=[{"side": m.side, "text": m.text} for m in snapshot.messages[-8:]],
-                    )
+                self._set_progress(
+                    phase="judging", status=f"已识别 {len(snapshot.messages)} 条消息，正在调用 Jev 判断…",
+                    preview=[{"side": m.side, "text": m.text} for m in snapshot.messages[-8:]],
+                )
                 analysis = judge(snapshot, self.settings.relationship, jev_key)
-                with self._lock:
-                    self._state.update(phase="generating" if profile else "idle", status="Jev 判断完成，正在生成建议回复…" if profile else "Jev 判断完成", analysis=_analysis_data(analysis))
+                self._set_progress(phase="generating" if profile else "idle", status="Jev 判断完成，正在生成建议回复…" if profile else "Jev 判断完成", analysis=_analysis_data(analysis))
                 if profile:
                     replies = generate_suggestions(
                         snapshot, self.settings.relationship, analysis, profile_key,
                         profile.model, profile.base_url, profile.max_tokens, profile.protocol,
                     )
-                    with self._lock:
-                        self._state.update(phase="ranking", status="Jev 正在评估候选回复的推荐度…")
+                    self._set_progress(phase="ranking", status="Jev 正在评估候选回复的推荐度…")
                     try:
                         suggestions = recommend_replies(
                             snapshot, self.settings.relationship, replies, jev_key
@@ -324,11 +355,9 @@ class DesktopApi:
                             for reply in replies
                         ]
                         status = f"回复已生成；Jev 推荐度暂不可用：{rank_error}"
-                    with self._lock:
-                        self._state.update(phase="idle", status=status, suggestions=suggestions)
+                    self._set_progress(phase="idle", status=status, suggestions=suggestions)
             except Exception as exc:
-                with self._lock:
-                    self._state.update(phase="error", status=str(exc), error=str(exc))
+                self._set_progress(phase="error", status=str(exc), error=str(exc))
 
         threading.Thread(target=worker, daemon=True).start()
         return {"ok": True}
@@ -358,6 +387,7 @@ class DesktopApi:
 
 
 def main() -> None:
+    ensure_dpi_awareness()
     api = DesktopApi()
     if getattr(sys, "frozen", False):
         frontend = Path(sys._MEIPASS) / "frontend" / "dist" / "index.html"
@@ -377,7 +407,7 @@ def main() -> None:
     )
     api.window = window
     try:
-        webview.start(gui="edgechromium", debug=not getattr(sys, "frozen", False))
+        webview.start(gui="edgechromium", debug=False)
     except Exception as exc:
         root = tk.Tk()
         root.withdraw()

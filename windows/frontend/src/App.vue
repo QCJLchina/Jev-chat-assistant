@@ -13,13 +13,15 @@ type Profile = {
 }
 type Suggestion = { text: string; probability: number | null; confidence: number | null; recommended: boolean }
 type UiState = {
-  status: string; phase: string; preview: { side: string; text: string }[]
+  revision: number; status: string; phase: string; preview: { side: string; text: string }[]
   analysis: Record<string, any> | null; suggestions: Suggestion[]; error: string
   version: string; chat_rect: Record<string, number> | null; chat_rect_mode: string; jev_key_configured: boolean
   relationship: string; allowed_titles: string[]; profiles: Profile[]; active_model_id: string
 }
+type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error'>>
 type Bridge = {
   get_state(): Promise<UiState>
+  get_progress(knownRevision: number): Promise<Progress>
   fetch_models(payload: string): Promise<{ models: string[] }>
   test_model(payload: string): Promise<{ message: string }>
   save_settings(payload: string): Promise<UiState>
@@ -33,7 +35,7 @@ declare global { interface Window { pywebview?: { api: Bridge } } }
 
 const bridge = () => window.pywebview?.api
 const initial: UiState = {
-  status: '请先配置 Jev API 并框选聊天区域', phase: 'idle', preview: [], analysis: null,
+  revision: 0, status: '请先配置 Jev API 并框选聊天区域', phase: 'idle', preview: [], analysis: null,
   suggestions: [], error: '', version: '1.0.0', chat_rect: null, chat_rect_mode: 'screen', jev_key_configured: false,
   relationship: '对方是我的朋友；from=me 是我发的，from=other 是对方发的', allowed_titles: [],
   profiles: [], active_model_id: '',
@@ -49,13 +51,18 @@ const toastError = ref(false)
 let toastTimer: number | undefined
 let pollTimer: number | undefined
 let trackingState = false
+let progressRevision = -1
+let polling = false
 
 const draft = reactive<Profile>({ id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
 const draftKeyVisible = ref(false)
 const modelOptions = ref<string[]>([])
-const modelStatus = ref('填写接口地址和 API Key 后自动读取模型列表')
+const modelStatus = ref('填写接口地址后自动读取模型列表')
 const modelBusy = ref(false)
 const testing = ref(false)
+const showModelList = ref(false)
+const modelListIndex = ref(-1)
+const modelNameInput = ref<HTMLInputElement | null>(null)
 let requestNo = 0
 let addressTimer: number | undefined
 let keyTimer: number | undefined
@@ -65,6 +72,23 @@ const clearJevKey = ref(false)
 
 const activeProfile = computed(() => state.profiles.find(p => p.id === state.active_model_id))
 const statusTone = computed(() => state.phase === 'error' ? 'danger' : state.phase === 'idle' ? 'neutral' : 'working')
+const endpointSuffixes: Record<string, string> = { 'openai-chat': '/chat/completions', 'openai-responses': '/responses', anthropic: '/messages' }
+const endpointPlaceholder = computed(() => draft.protocol === 'anthropic'
+  ? 'https://api.anthropic.com/v1'
+  : draft.protocol === 'openai-responses'
+    ? 'https://api.openai.com/v1'
+    : 'https://api.example.com/v1')
+
+function normalizeEndpointUrl(url: string, protocol: string) {
+  const suffix = endpointSuffixes[protocol]
+  if (!suffix) return url
+  let value = url.trim().replace(/\/+$/, '')
+  for (const known of Object.values(endpointSuffixes)) {
+    if (value.toLowerCase().endsWith(known)) { value = value.slice(0, -known.length); break }
+  }
+  if (/\/v\d+$/i.test(value)) value += suffix
+  return value
+}
 
 function notify(message: string, isError = false) {
   toast.value = message
@@ -72,17 +96,63 @@ function notify(message: string, isError = false) {
   window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => { toast.value = '' }, 3000)
 }
-function applyState(next: UiState) { Object.assign(state, next) }
+function readableError(error: unknown) {
+  return String(error).replace(/^\w*Error:\s*/, '')
+}
+function applyState(next: UiState) {
+  const previousRevision = progressRevision
+  progressRevision = next.revision
+  Object.assign(state, next)
+  if (trackingState && next.revision !== previousRevision && (next.phase === 'idle' || next.phase === 'error')) {
+    trackingState = false
+  }
+}
 async function loadState() {
   try {
     if (bridge()) applyState(await bridge()!.get_state())
   } catch (error) { notify(String(error), true) }
 }
+async function pollProgress() {
+  if (!trackingState || page.value !== 'home' || polling || !bridge()) return
+  polling = true
+  try {
+    const previousRevision = progressRevision
+    const result = await bridge()!.get_progress(previousRevision)
+    if (result.revision !== previousRevision) {
+      progressRevision = result.revision
+      state.revision = result.revision
+      const { revision, ...changes } = result
+      Object.assign(state, changes)
+      if (state.phase === 'idle' || state.phase === 'error') trackingState = false
+    }
+  } catch { /* Retry after the window reappears from capture. */ }
+  finally { polling = false }
+}
 function resetDraft() {
   Object.assign(draft, { id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
   draftKeyVisible.value = false
+  closeModelList()
   modelOptions.value = []
-  modelStatus.value = '填写接口地址和 API Key 后自动读取模型列表'
+  modelStatus.value = '填写接口地址后自动读取模型列表'
+}
+function closeModelList() { showModelList.value = false; modelListIndex.value = -1 }
+function filteredModelOptions() {
+  const query = draft.model.trim().toLowerCase()
+  if (!query) return modelOptions.value
+  return modelOptions.value.filter(model => model.toLowerCase().includes(query))
+}
+function chooseModel(model: string) {
+  draft.model = model
+  closeModelList()
+  modelNameInput.value?.focus()
+}
+function onModelNameKeydown(event: KeyboardEvent) {
+  const options = filteredModelOptions()
+  if (!showModelList.value || !options.length) return
+  if (event.key === 'ArrowDown') { event.preventDefault(); modelListIndex.value = (modelListIndex.value + 1) % options.length }
+  else if (event.key === 'ArrowUp') { event.preventDefault(); modelListIndex.value = modelListIndex.value <= 0 ? options.length - 1 : modelListIndex.value - 1 }
+  else if (event.key === 'Enter' && modelListIndex.value >= 0) { event.preventDefault(); chooseModel(options[modelListIndex.value]) }
+  else if (event.key === 'Escape') { event.preventDefault(); closeModelList() }
 }
 function addModel() {
   editingId.value = ''
@@ -93,7 +163,7 @@ function editModel(item: Profile) {
   editingId.value = item.id
   Object.assign(draft, { ...item, api_key: '' })
   modelOptions.value = []
-  modelStatus.value = item.key_configured ? '已保存密钥；留空保持不变' : '填写 API Key 后拉取模型列表'
+  modelStatus.value = item.key_configured ? '已保存密钥；留空保持不变' : '填写接口地址后拉取模型列表'
   showModel.value = true
 }
 function chooseProvider(value: string) {
@@ -108,33 +178,35 @@ function chooseProvider(value: string) {
   const defaults: Record<string, string> = { 'openai-chat': 'OpenAI Chat', 'openai-responses': 'OpenAI Responses', anthropic: 'Anthropic' }
   draft.name = defaults[value] || '自定义模型'
 }
-function canFetchModels() { return /^https?:\/\//i.test(draft.base_url.trim()) && (!!draft.api_key?.trim() || (!!editingId.value && draft.key_configured)) }
-async function refreshModels(expected?: { url: string; key: string; token: number }) {
-  if (!canFetchModels()) { modelStatus.value = '填写接口地址和 API Key 后自动读取模型列表'; return }
+function canFetchModels() { return /^https?:\/\//i.test(draft.base_url.trim()) }
+async function refreshModels() {
+  if (!canFetchModels()) { modelStatus.value = '填写接口地址后自动读取模型列表'; return }
   const url = draft.base_url.trim()
-  const key = draft.api_key?.trim() || ''
-  const token = expected?.token ?? ++requestNo
+  const token = ++requestNo
   modelBusy.value = true
   modelStatus.value = '正在读取模型列表…'
   try {
     if (!bridge()) throw new Error('桌面连接不可用')
-    const result = await bridge()!.fetch_models(JSON.stringify({ profile_id: editingId.value, base_url: url, api_key: key, protocol: draft.protocol }))
-    if (token !== requestNo || url !== draft.base_url.trim() || key !== (draft.api_key?.trim() || '')) return
+    const result = await bridge()!.fetch_models(JSON.stringify({ profile_id: editingId.value, base_url: url, api_key: draft.api_key?.trim() || '', protocol: draft.protocol }))
+    if (token !== requestNo || url !== draft.base_url.trim()) return
     modelOptions.value = result.models
     modelStatus.value = `已找到 ${result.models.length} 个模型`
   } catch (error) {
     if (token !== requestNo || url !== draft.base_url.trim()) return
     modelOptions.value = []
-    modelStatus.value = `${String(error).replace(/^Error:\s*/, '')} 可手动填写模型名称。`
+    modelStatus.value = `${readableError(error)} 可手动填写模型名称。`
   } finally {
     if (token === requestNo) modelBusy.value = false
   }
 }
 watch(() => draft.base_url, (value, old) => {
+  const normalized = normalizeEndpointUrl(value, draft.protocol)
+  if (normalized !== value.trim()) { draft.base_url = normalized; return }
   if (old && value.trim() !== old.trim()) {
     draft.api_key = ''
     modelOptions.value = []
-    modelStatus.value = '接口地址已变化，请重新填写该接口的 API Key'
+    closeModelList()
+    modelStatus.value = '接口地址已变化，请重新读取模型列表'
     requestNo++
     modelBusy.value = false
   }
@@ -148,6 +220,9 @@ watch(() => draft.api_key, value => {
 watch(() => draft.protocol, () => {
   requestNo++
   modelOptions.value = []
+  closeModelList()
+  const normalized = normalizeEndpointUrl(draft.base_url, draft.protocol)
+  if (normalized !== draft.base_url.trim()) draft.base_url = normalized
   if (canFetchModels()) window.setTimeout(() => refreshModels(), 200)
 })
 async function testConnection() {
@@ -156,7 +231,7 @@ async function testConnection() {
   try {
     const result = await bridge()!.test_model(JSON.stringify({ profile_id: editingId.value, base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.api_key?.trim() || '', protocol: draft.protocol }))
     notify(`连接成功：${result.message || '模型已响应'}`)
-  } catch (error) { notify(String(error).replace(/^Error:\s*/, ''), true) }
+  } catch (error) { notify(readableError(error), true) }
   finally { testing.value = false }
 }
 function saveModel() {
@@ -192,7 +267,7 @@ async function saveSettings() {
     clearJevKey.value = false
     page.value = 'home'
     notify('设置已安全保存')
-  } catch (error) { notify(String(error).replace(/^Error:\s*/, ''), true) }
+  } catch (error) { notify(readableError(error), true) }
   finally { busy.value = false }
 }
 async function calibrate() {
@@ -207,7 +282,11 @@ async function analyze() {
     trackingState = true
     const result = await bridge()!.analyze()
     if (!result.ok) { trackingState = false; notify(result.error || '无法开始分析', true) }
-    else notify('已开始分析当前对话')
+    else {
+      state.phase = 'capturing'
+      state.status = '正在截取对话…'
+      notify('已开始分析当前对话')
+    }
   } catch (error) { notify(String(error), true) }
 }
 async function toggleTopmost() {
@@ -237,14 +316,10 @@ const actionLabels: Record<string, string> = {
 function percent(value: number | null | undefined) { return value == null ? '—' : `${Math.round(value * 100)}%` }
 function danger(value: number | null | undefined) { return value == null ? '—' : `${value.toFixed(1)}/9` }
 
-onMounted(async () => {
-  if (bridge()) await loadState()
-  window.addEventListener('pywebviewready', loadState, { once: true })
-  pollTimer = window.setInterval(async () => {
-    if (!trackingState || page.value !== 'home') return
-    await loadState()
-    if (state.phase === 'idle' || state.phase === 'error') trackingState = false
-  }, 850)
+onMounted(() => {
+  if (bridge()) void loadState()
+  else window.addEventListener('pywebviewready', loadState, { once: true })
+  pollTimer = window.setInterval(() => { void pollProgress() }, 850)
 })
 onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState); window.clearInterval(pollTimer); window.clearTimeout(toastTimer); window.clearTimeout(addressTimer); window.clearTimeout(keyTimer) })
 </script>
@@ -345,15 +420,28 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 
     <footer class="app-footer"><span>Jev 对话助手 <span class="footer-divider">·</span> 只辅助，不代发</span><button @click="notify('所有建议都需要你自行判断，不会自动发送。')"><CircleHelp :size="14" /> 使用说明</button></footer>
 
-    <div v-if="showModel" class="modal-backdrop" @click.self="showModel = false">
+    <div v-if="showModel" class="modal-backdrop">
       <section class="model-dialog">
         <header class="dialog-header"><div><div class="dialog-kicker">MODEL PROVIDER</div><h2>{{ editingId ? '编辑模型' : '添加模型' }}</h2></div><button class="small-icon" aria-label="关闭" @click="showModel = false"><X :size="19" /></button></header>
         <div class="dialog-scroll">
           <label class="field-label" for="provider">接口协议 / 供应商</label><div class="select-wrap provider-select"><select id="provider" :value="draft.name === 'DeepSeek' ? 'deepseek' : draft.protocol" @change="chooseProvider(($event.target as HTMLSelectElement).value)"><option value="openai-chat">openai-chat</option><option value="openai-responses">openai-responses</option><option value="anthropic">anthropic</option><option value="deepseek">DeepSeek（openai-chat）</option></select><ChevronDown :size="16" /></div>
           <label class="field-label" for="provider-name">显示名称</label><input id="provider-name" v-model="draft.name" class="plain-input" placeholder="例如：我的模型服务" />
-          <label class="field-label" for="base-url">接口地址</label><input id="base-url" v-model="draft.base_url" class="plain-input" :placeholder="draft.protocol === 'anthropic' ? 'https://api.anthropic.com/v1/messages' : draft.protocol === 'openai-responses' ? 'https://api.openai.com/v1/responses' : 'https://api.example.com/v1/chat/completions'" autocomplete="url" />
+          <label class="field-label" for="base-url">接口地址</label><input id="base-url" v-model="draft.base_url" class="plain-input" :placeholder="endpointPlaceholder" autocomplete="url" />
           <label class="field-label" for="model-key">API Key</label><div class="key-entry-row"><div class="input-with-icon key-input"><KeyRound :size="16" /><input id="model-key" v-model="draft.api_key" :type="draftKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="editingId && draft.key_configured ? '已保存密钥；留空保持不变' : '输入此接口的 API Key'" /><button class="field-icon-button" @click="draftKeyVisible = !draftKeyVisible"><EyeOff v-if="draftKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div><button class="button button-outline test-button" :disabled="testing || !draft.base_url || !draft.model" @click="testConnection"><LoaderCircle v-if="testing" :size="15" class="spin" /><span v-else>测试连接</span></button></div>
-          <label class="field-label" for="model-name">模型名称</label><input id="model-name" v-model="draft.model" class="plain-input" list="model-options" placeholder="输入或选择模型，例如 gpt-4o" autocomplete="off" /><datalist id="model-options"><option v-for="model in modelOptions" :key="model" :value="model" /></datalist>
+          <label class="field-label" for="model-name">模型名称</label>
+          <div class="model-name-wrap">
+            <input id="model-name" ref="modelNameInput" v-model="draft.model" class="plain-input" placeholder="输入或选择模型，例如 gpt-4o" autocomplete="off"
+              @focus="modelOptions.length && (showModelList = true)"
+              @input="modelListIndex = -1; showModelList = !!filteredModelOptions().length"
+              @blur="closeModelList()"
+              @keydown="onModelNameKeydown" />
+            <button v-if="modelOptions.length" class="field-icon-button" tabindex="-1" aria-label="展开模型列表"
+              @mousedown.prevent="showModelList = !showModelList" @click="modelNameInput?.focus()"><ChevronDown :size="16" /></button>
+            <ul v-if="showModelList && filteredModelOptions().length" class="model-dropdown" @mousedown.prevent>
+              <li v-for="(model, index) in filteredModelOptions()" :key="model" :class="{ selected: index === modelListIndex }"
+                @mouseenter="modelListIndex = index" @mousedown.prevent="chooseModel(model)">{{ model }}</li>
+            </ul>
+          </div>
           <div class="model-list-row"><span :class="{ 'success-text': modelOptions.length }"><LoaderCircle v-if="modelBusy" :size="13" class="spin" /><CheckCircle2 v-else-if="modelOptions.length" :size="13" /><span v-else class="soft-dot"></span>{{ modelStatus }}</span><button class="refresh-button" :disabled="modelBusy || !canFetchModels()" @click="refreshModels()"><RefreshCw :size="14" :class="{ spin: modelBusy }" />刷新列表</button></div>
           <div class="advanced-heading"><span>高级配置</span><span class="muted">可选</span></div>
           <label class="field-label" for="max-tokens">输出长度</label><div class="token-input-wrap"><input id="max-tokens" v-model.number="draft.max_tokens" class="plain-input" type="number" min="1" max="131072" placeholder="使用服务商默认值" /><span>tokens</span></div>
@@ -367,6 +455,12 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 </template>
 
 <style>
+.model-name-wrap{position:relative}
+.model-name-wrap .plain-input{width:100%;padding-right:42px}
+.model-name-wrap .field-icon-button{position:absolute;right:6px;top:50%;transform:translateY(-50%)}
+.model-dropdown{position:absolute;z-index:10;left:0;right:0;top:calc(100% + 4px);max-height:220px;overflow-y:auto;margin:0;padding:5px;list-style:none;border:1px solid #dfe7ef;border-radius:9px;background:#fff;box-shadow:0 10px 30px rgba(30,49,72,.14)}
+.model-dropdown li{padding:8px 10px;border-radius:6px;color:#45596f;font-size:12px;cursor:pointer}
+.model-dropdown li.selected{background:#eaf6ff;color:#2585bf}
 .suggestion-copy{flex:1;min-width:0}
 .suggestion-copy p{display:block;margin:0}
 .recommend-badge{display:inline-flex;align-items:center;margin-left:8px;padding:2px 7px;border-radius:10px;background:#fff0ef;color:#d94d49;font-size:9px;font-weight:700;vertical-align:1px}

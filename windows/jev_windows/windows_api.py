@@ -31,6 +31,42 @@ _USER32 = ctypes.WinDLL("user32", use_last_error=True)
 _USER32.GetSystemMetrics.argtypes = [ctypes.c_int]
 _USER32.GetSystemMetrics.restype = ctypes.c_int
 
+_DPI_SET = False
+_DPI_CONTEXT_PER_MONITOR_V2 = ctypes.c_void_p(-4)
+
+
+def ensure_dpi_awareness() -> bool:
+    """Make screen, Tk, and screenshot coordinates share physical pixels.
+
+    Without this, a non-DPI-aware process gets virtualized coordinates on
+    scaled displays, so the selection overlay and the captured image disagree.
+    """
+    global _DPI_SET
+    if _DPI_SET:
+        return True
+    # Prefer per-monitor v2: on mixed-DPI laptops (e.g. a scaled laptop panel
+    # next to a 100% external monitor), v2 keeps physical-pixel coordinates
+    # per monitor instead of virtualizing the secondary display.
+    try:
+        set_context = _USER32.SetProcessDpiAwarenessContext
+        set_context.argtypes = [ctypes.c_void_p]
+        set_context.restype = wintypes.BOOL
+        if set_context(_DPI_CONTEXT_PER_MONITOR_V2):
+            _DPI_SET = True
+            return True
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+        _DPI_SET = True
+        return True
+    except (AttributeError, OSError):
+        try:
+            _DPI_SET = bool(_USER32.SetProcessDPIAware())
+        except (AttributeError, OSError):
+            return False
+    return _DPI_SET
+
 
 @dataclass(frozen=True)
 class WeChatWindow:

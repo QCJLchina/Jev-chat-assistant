@@ -1,5 +1,7 @@
+from jev_windows import capture, windows_api
 from jev_windows.capture import TextBox, _boxes_to_messages
 from jev_windows.models import Rect
+from jev_windows.workflow import capture_without_overlay
 
 
 def test_boxes_are_classified_by_side_and_center_rows_ignored():
@@ -43,3 +45,33 @@ def test_wrapped_lines_from_one_bubble_are_merged():
     assert [(item.side, item.text) for item in messages] == [
         ("me", "这个任务最后 需要什么格式")
     ]
+
+
+def test_desktop_window_is_restored_before_ocr(monkeypatch):
+    area = Rect(0, 0, 1000, 800)
+    frame = object()
+    events = []
+    monkeypatch.setattr(windows_api, "virtual_screen_rect", lambda: area)
+
+    def recognize(rect, image):
+        assert rect == area
+        assert image is frame
+        events.append("ocr")
+        return [TextBox("你好", Rect(100, 200, 200, 230))]
+
+    monkeypatch.setattr(capture, "_ocr_boxes", recognize)
+
+    def capture_frame(rect):
+        assert rect == area
+        return capture_without_overlay(
+            lambda: events.append("hide"),
+            lambda: events.append("show"),
+            lambda: (frame, "聊天窗口"),
+            settle=lambda _: None,
+        )
+
+    snapshot = capture.capture_desktop_chat(area, capture_frame)
+
+    assert events == ["hide", "show", "ocr"]
+    assert snapshot.title == "聊天窗口"
+    assert [(message.side, message.text) for message in snapshot.messages] == [("other", "你好")]

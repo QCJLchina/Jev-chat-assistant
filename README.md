@@ -1,6 +1,6 @@
 # Jev 对话助手（Windows PC 版）
 
-**版本：v1.0.0**
+**版本：v1.1.0**
 
 本项目是基于开源项目https://github.com/Liyucheng1997/332_lab-jev-chat 的判断题库与分析流程进行的 Windows PC 端再开发。
 

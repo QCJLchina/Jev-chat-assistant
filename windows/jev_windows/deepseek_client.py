@@ -50,9 +50,12 @@ def _headers(key: str, protocol: str, *, json_body: bool = False) -> dict[str, s
     if json_body:
         headers["Content-Type"] = "application/json; charset=utf-8"
     if protocol == "anthropic":
-        headers.update({"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION})
+        headers["anthropic-version"] = ANTHROPIC_VERSION
+        if key:
+            headers["x-api-key"] = key
     else:
-        headers["Authorization"] = f"Bearer {key}"
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
@@ -109,8 +112,15 @@ def _post(
     return _request_json(base_url, "chat/completions", key, "openai-chat", body=body, timeout=timeout)
 
 
-def list_models(base_url: str, key: str, timeout: float = 12, protocol: str = DEFAULT_PROTOCOL) -> list[str]:
-    payload = _request_json(base_url, "models", key, protocol, timeout=timeout)
+def list_models(base_url: str, key: str = "", timeout: float = 12, protocol: str = DEFAULT_PROTOCOL) -> list[str]:
+    # Some gateways expose /models publicly, others require the API key.
+    # Try unauthenticated first; retry once with the user's key on 401.
+    try:
+        payload = _request_json(base_url, "models", "", protocol, timeout=timeout)
+    except DeepSeekError as exc:
+        if not key or "401" not in str(exc):
+            raise
+        payload = _request_json(base_url, "models", key, protocol, timeout=timeout)
     try:
         data = payload["data"]
         models = sorted({str(item["id"]).strip() for item in data if item.get("id")})
