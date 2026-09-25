@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { checked, display, errorMessage, languages, locale, m, t } from './i18n'
+import type { BridgeResult, Language, Locale, Message } from './i18n'
+import { version as appVersion } from '../package.json'
 import {
   ArrowLeft, ArrowRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight,
   CircleHelp, Copy, Cpu, Eye, EyeOff, KeyRound, LoaderCircle,
@@ -13,40 +16,45 @@ type Profile = {
 }
 type Suggestion = { text: string; probability: number | null; confidence: number | null; recommended: boolean }
 type UiState = {
+  language: Language; resolved_language: Locale; status_message?: Message; error_message?: Message;
   revision: number; status: string; phase: string; preview: { side: string; text: string }[]
   analysis: Record<string, any> | null; suggestions: Suggestion[]; error: string
   version: string; chat_rect: Record<string, number> | null; chat_rect_mode: string; jev_key_configured: boolean
   relationship: string; allowed_titles: string[]; profiles: Profile[]; active_model_id: string
 }
-type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error'>>
+type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message'>>
 type Bridge = {
+  set_language(language: Language): Promise<BridgeResult & { language: Language; resolved_language: Locale }>
   get_state(): Promise<UiState>
   get_progress(knownRevision: number): Promise<Progress>
-  fetch_models(payload: string): Promise<{ models: string[] }>
-  test_model(payload: string): Promise<{ message: string }>
-  save_settings(payload: string): Promise<UiState>
-  start_calibration(): Promise<{ ok: boolean; error?: string }>
-  analyze(): Promise<{ ok: boolean; error?: string }>
+  fetch_models(payload: string): Promise<BridgeResult & { models: string[] }>
+  test_model(payload: string): Promise<BridgeResult & { message: string; message_message?: Message }>
+  save_settings(payload: string): Promise<UiState & BridgeResult>
+  start_calibration(): Promise<BridgeResult>
+  analyze(): Promise<BridgeResult>
   set_on_top(value: boolean): Promise<{ ok: boolean }>
-  set_active_model(profileId: string): Promise<{ ok: boolean }>
-  copy_text(value: string): Promise<{ ok: boolean }>
+  set_active_model(profileId: string): Promise<BridgeResult>
+  copy_text(value: string): Promise<BridgeResult>
 }
 declare global { interface Window { pywebview?: { api: Bridge } } }
 
 const bridge = () => window.pywebview?.api
 const initial: UiState = {
-  revision: 0, status: '请先配置 Jev API 并框选聊天区域', phase: 'idle', preview: [], analysis: null,
-  suggestions: [], error: '', version: '1.0.0', chat_rect: null, chat_rect_mode: 'screen', jev_key_configured: false,
+  language: 'system', resolved_language: 'zh-CN', status_message: m('status.initial'),
+  revision: 0, status: '', phase: 'idle', preview: [], analysis: null,
+  suggestions: [], error: '', version: appVersion, chat_rect: null, chat_rect_mode: 'screen', jev_key_configured: false,
   relationship: '对方是我的朋友；from=me 是我发的，from=other 是对方发的', allowed_titles: [],
   profiles: [], active_model_id: '',
 }
 const state = reactive<UiState>({ ...initial })
 const page = ref<'home' | 'settings'>('home')
 const showModel = ref(false)
+const pendingDelete = ref<Profile | null>(null)
+const languageBusy = ref(false)
 const editingId = ref('')
 const busy = ref(false)
 const topmost = ref(true)
-const toast = ref('')
+const toast = ref<Message | string>('')
 const toastError = ref(false)
 let toastTimer: number | undefined
 let pollTimer: number | undefined
@@ -57,7 +65,7 @@ let polling = false
 const draft = reactive<Profile>({ id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
 const draftKeyVisible = ref(false)
 const modelOptions = ref<string[]>([])
-const modelStatus = ref('填写接口地址后自动读取模型列表')
+const modelStatus = ref<Message | string>(m('model.listHint'))
 const modelBusy = ref(false)
 const testing = ref(false)
 const showModelList = ref(false)
@@ -90,19 +98,20 @@ function normalizeEndpointUrl(url: string, protocol: string) {
   return value
 }
 
-function notify(message: string, isError = false) {
+function notify(message: Message | string, isError = false) {
   toast.value = message
   toastError.value = isError
   window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => { toast.value = '' }, 3000)
 }
-function readableError(error: unknown) {
-  return String(error).replace(/^\w*Error:\s*/, '')
-}
+function readableError(error: unknown) { return errorMessage(error) }
 function applyState(next: UiState) {
   const previousRevision = progressRevision
   progressRevision = next.revision
   Object.assign(state, next)
+  state.status_message = next.status_message
+  state.error_message = next.error_message
+  locale.value = next.resolved_language ?? 'zh-CN'
   if (trackingState && next.revision !== previousRevision && (next.phase === 'idle' || next.phase === 'error')) {
     trackingState = false
   }
@@ -110,7 +119,7 @@ function applyState(next: UiState) {
 async function loadState() {
   try {
     if (bridge()) applyState(await bridge()!.get_state())
-  } catch (error) { notify(String(error), true) }
+  } catch (error) { notify(errorMessage(error), true) }
 }
 async function pollProgress() {
   if (!trackingState || page.value !== 'home' || polling || !bridge()) return
@@ -123,6 +132,8 @@ async function pollProgress() {
       state.revision = result.revision
       const { revision, ...changes } = result
       Object.assign(state, changes)
+      if ('status' in changes) state.status_message = changes.status_message
+      if ('error' in changes) state.error_message = changes.error_message
       if (state.phase === 'idle' || state.phase === 'error') trackingState = false
     }
   } catch { /* Retry after the window reappears from capture. */ }
@@ -133,7 +144,7 @@ function resetDraft() {
   draftKeyVisible.value = false
   closeModelList()
   modelOptions.value = []
-  modelStatus.value = '填写接口地址后自动读取模型列表'
+  modelStatus.value = m('model.listHint')
 }
 function closeModelList() { showModelList.value = false; modelListIndex.value = -1 }
 function filteredModelOptions() {
@@ -163,7 +174,7 @@ function editModel(item: Profile) {
   editingId.value = item.id
   Object.assign(draft, { ...item, api_key: '' })
   modelOptions.value = []
-  modelStatus.value = item.key_configured ? '已保存密钥；留空保持不变' : '填写接口地址后拉取模型列表'
+  modelStatus.value = item.key_configured ? m('key.savedHint') : m('model.listHintEdit')
   showModel.value = true
 }
 function chooseProvider(value: string) {
@@ -176,25 +187,25 @@ function chooseProvider(value: string) {
   }
   draft.protocol = value
   const defaults: Record<string, string> = { 'openai-chat': 'OpenAI Chat', 'openai-responses': 'OpenAI Responses', anthropic: 'Anthropic' }
-  draft.name = defaults[value] || '自定义模型'
+  draft.name = defaults[value] || t('model.custom')
 }
 function canFetchModels() { return /^https?:\/\//i.test(draft.base_url.trim()) }
 async function refreshModels() {
-  if (!canFetchModels()) { modelStatus.value = '填写接口地址后自动读取模型列表'; return }
+  if (!canFetchModels()) { modelStatus.value = m('model.listHint'); return }
   const url = draft.base_url.trim()
   const token = ++requestNo
   modelBusy.value = true
-  modelStatus.value = '正在读取模型列表…'
+  modelStatus.value = m('model.loading')
   try {
-    if (!bridge()) throw new Error('桌面连接不可用')
-    const result = await bridge()!.fetch_models(JSON.stringify({ profile_id: editingId.value, base_url: url, api_key: draft.api_key?.trim() || '', protocol: draft.protocol }))
+    if (!bridge()) throw m('bridge.unavailable')
+    const result = checked(await bridge()!.fetch_models(JSON.stringify({ profile_id: editingId.value, base_url: url, api_key: draft.api_key?.trim() || '', protocol: draft.protocol })))
     if (token !== requestNo || url !== draft.base_url.trim()) return
     modelOptions.value = result.models
-    modelStatus.value = `已找到 ${result.models.length} 个模型`
+    modelStatus.value = m('model.found', { count: result.models.length })
   } catch (error) {
     if (token !== requestNo || url !== draft.base_url.trim()) return
     modelOptions.value = []
-    modelStatus.value = `${readableError(error)} 可手动填写模型名称。`
+    modelStatus.value = m('model.manual', { detail: readableError(error) })
   } finally {
     if (token === requestNo) modelBusy.value = false
   }
@@ -206,7 +217,7 @@ watch(() => draft.base_url, (value, old) => {
     draft.api_key = ''
     modelOptions.value = []
     closeModelList()
-    modelStatus.value = '接口地址已变化，请重新读取模型列表'
+    modelStatus.value = m('model.urlChanged')
     requestNo++
     modelBusy.value = false
   }
@@ -226,16 +237,16 @@ watch(() => draft.protocol, () => {
   if (canFetchModels()) window.setTimeout(() => refreshModels(), 200)
 })
 async function testConnection() {
-  if (!draft.model.trim()) { notify('请先填写或选择模型名称', true); return }
+  if (!draft.model.trim()) { notify(m('model.nameRequired'), true); return }
   testing.value = true
   try {
-    const result = await bridge()!.test_model(JSON.stringify({ profile_id: editingId.value, base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.api_key?.trim() || '', protocol: draft.protocol }))
-    notify(`连接成功：${result.message || '模型已响应'}`)
+    const result = checked(await bridge()!.test_model(JSON.stringify({ profile_id: editingId.value, base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.api_key?.trim() || '', protocol: draft.protocol })))
+    notify(m('model.connected', { detail: result.message_message ?? result.message ?? m('model.responded') }))
   } catch (error) { notify(readableError(error), true) }
   finally { testing.value = false }
 }
 function saveModel() {
-  if (!draft.name.trim() || !draft.base_url.trim() || !draft.model.trim()) { notify('请填写供应商名称、接口地址和模型名称', true); return }
+  if (!draft.name.trim() || !draft.base_url.trim() || !draft.model.trim()) { notify(m('model.required'), true); return }
   const id = editingId.value || crypto.randomUUID()
   const next: Profile = { ...draft, id, name: draft.name.trim(), base_url: draft.base_url.trim(), model: draft.model.trim(), max_tokens: Number(draft.max_tokens) || null }
   delete next.key_configured
@@ -244,10 +255,15 @@ function saveModel() {
   else state.profiles.push(next)
   if (!state.active_model_id) state.active_model_id = id
   showModel.value = false
-  notify('模型配置已暂存，请保存设置')
+  notify(m('model.staged'))
 }
 function removeModel(item: Profile) {
-  if (!window.confirm(`删除“${item.name}”模型配置？`)) return
+  pendingDelete.value = item
+}
+function confirmDelete() {
+  const item = pendingDelete.value
+  if (!item) return
+  pendingDelete.value = null
   state.profiles = state.profiles.filter(profile => profile.id !== item.id)
   if (state.active_model_id === item.id) state.active_model_id = state.profiles[0]?.id || ''
 }
@@ -255,66 +271,89 @@ async function saveSettings() {
   if (busy.value) return
   busy.value = true
   try {
-    const next = await bridge()!.save_settings(JSON.stringify({
+    const next = checked(await bridge()!.save_settings(JSON.stringify({
       jev_api_key: jevKey.value, clear_jev_key: clearJevKey.value,
       relationship: state.relationship,
       allowed_titles: state.allowed_titles,
       active_model_id: state.active_model_id,
       profiles: state.profiles,
-    }))
+    })))
     applyState(next)
     jevKey.value = ''
     clearJevKey.value = false
     page.value = 'home'
-    notify('设置已安全保存')
+    notify(m('settings.saved'))
   } catch (error) { notify(readableError(error), true) }
   finally { busy.value = false }
 }
 async function calibrate() {
   try {
     const result = await bridge()!.start_calibration()
-    if (!result.ok) notify(result.error || '无法开始框选', true)
-    else { trackingState = true; notify('请在微信窗口拖动框选聊天消息区域') }
-  } catch (error) { notify(String(error), true) }
+    if (!result.ok) notify(result.error_message ?? m('capture.failed'), true)
+    else { trackingState = true; notify(m('capture.drag')) }
+  } catch (error) { notify(errorMessage(error), true) }
 }
 async function analyze() {
   try {
     trackingState = true
     const result = await bridge()!.analyze()
-    if (!result.ok) { trackingState = false; notify(result.error || '无法开始分析', true) }
+    if (!result.ok) { trackingState = false; notify(result.error_message ?? m('analysis.failed'), true) }
     else {
       state.phase = 'capturing'
-      state.status = '正在截取对话…'
-      notify('已开始分析当前对话')
+      state.status_message = m('analysis.capturing')
+      notify(m('analysis.started'))
     }
-  } catch (error) { notify(String(error), true) }
+  } catch (error) { notify(errorMessage(error), true) }
 }
 async function toggleTopmost() {
   topmost.value = !topmost.value
   try { await bridge()?.set_on_top(topmost.value) } catch { /* browser preview */ }
 }
 async function selectActiveModel() {
-  try { await bridge()?.set_active_model(state.active_model_id) }
-  catch (error) { notify(String(error), true) }
+  try { if (bridge()) checked(await bridge()!.set_active_model(state.active_model_id)) }
+  catch (error) { notify(errorMessage(error), true) }
 }
 async function copyReply(reply: string) {
   try {
-    if (bridge()) await bridge()!.copy_text(reply)
+    if (bridge()) checked(await bridge()!.copy_text(reply))
     else await navigator.clipboard.writeText(reply)
-    notify('建议回复已复制，请检查后自行发送')
-  } catch { notify('复制失败，请手动选择文本', true) }
+    notify(m('replies.copied'))
+  } catch { notify(m('replies.copyFailed'), true) }
 }
-const intentLabels: Record<string, string> = {
-  confirm_you_care: '确认你是否在乎', vent_anger: '表达生气或受伤', request_action: '要求具体行动',
-  seek_explanation: '寻求解释', casual_chat: '轻松聊天', close_topic: '结束话题',
+const intentLabels = computed<Record<string, string>>(() => ({
+  confirm_you_care: t('intent.confirm_you_care'), vent_anger: t('intent.vent_anger'), request_action: t('intent.request_action'),
+  seek_explanation: t('intent.seek_explanation'), casual_chat: t('intent.casual_chat'), close_topic: t('intent.close_topic'),
+}))
+const needLabels = computed<Record<string, string>>(() => ({ apology: t('need.apology'), action: t('need.action'), explanation: t('need.explanation'), care: t('need.care'), nothing: t('need.nothing') }))
+const actionLabels = computed<Record<string, string>>(() => ({
+  check_history: t('action.check_history'), apologize: t('action.apologize'), give_commitment: t('action.give_commitment'),
+  explain: t('action.explain'), acknowledge: t('action.acknowledge'), say_less: t('action.say_less'), make_plan: t('action.make_plan'),
+}))
+function percent(value: number | null | undefined) { return value == null ? '—' : new Intl.NumberFormat(locale.value, { style: 'percent', maximumFractionDigits: 0 }).format(value) }
+function danger(value: number | null | undefined) { return value == null ? '—' : `${new Intl.NumberFormat(locale.value, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value)}/9` }
+
+watch([locale, () => state.version], () => {
+  document.documentElement.lang = locale.value
+  document.title = t('app.title', { version: state.version })
+}, { immediate: true })
+
+async function changeLanguage(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const chosen = select.value as Language
+  languageBusy.value = true
+  try {
+    if (!bridge()) throw m('bridge.unavailable')
+    const result = checked(await bridge()!.set_language(chosen))
+    state.language = result.language
+    state.resolved_language = result.resolved_language
+    locale.value = result.resolved_language
+    notify(m('language.saved'))
+  } catch (error) { notify(errorMessage(error), true) }
+  finally {
+    select.value = state.language
+    languageBusy.value = false
+  }
 }
-const needLabels: Record<string, string> = { apology: '道歉', action: '行动', explanation: '解释', care: '被重视', nothing: '无需追加' }
-const actionLabels: Record<string, string> = {
-  check_history: '先查聊天记录', apologize: '真诚道歉', give_commitment: '给出具体承诺',
-  explain: '解释事实', acknowledge: '先接住情绪', say_less: '少说一点', make_plan: '确定计划',
-}
-function percent(value: number | null | undefined) { return value == null ? '—' : `${Math.round(value * 100)}%` }
-function danger(value: number | null | undefined) { return value == null ? '—' : `${value.toFixed(1)}/9` }
 
 onMounted(() => {
   if (bridge()) void loadState()
@@ -329,128 +368,142 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
     <header class="topbar">
       <div class="brand-lockup">
         <div class="brand-mark"><Sparkles :size="19" /></div>
-        <div><div class="brand-name">Jev <span>对话助手</span></div><div class="brand-caption">CONVERSATION COMPANION</div></div>
+        <div><div class="brand-name">Jev <span>{{ t('app.short') }}</span></div><div class="brand-caption">{{ t('app.caption') }}</div></div>
       </div>
       <div class="top-actions">
-        <button class="icon-button" :class="{ selected: topmost }" :title="topmost ? '取消窗口置顶' : '窗口置顶'" @click="toggleTopmost"><Eye :size="17" /></button>
-        <button class="button button-quiet" @click="page = page === 'settings' ? 'home' : 'settings'"><Settings2 :size="16" /> 设置</button>
+        <button class="icon-button" :class="{ selected: topmost }" :title="topmost ? t('common.unpin') : t('common.pin')" @click="toggleTopmost"><Eye :size="17" /></button>
+        <button class="button button-quiet" @click="page = page === 'settings' ? 'home' : 'settings'"><Settings2 :size="16" /> {{ t('common.settings') }}</button>
       </div>
     </header>
 
     <template v-if="page === 'home'">
       <section class="welcome-row">
-        <div><div class="eyebrow">你的对话副驾 <span class="version-pill">v{{ state.version }}</span></div><h1>把对话看清楚，再决定怎么回应。</h1><p>只给建议，由你判断。所有消息不会自动发送。</p></div>
-        <div class="jev-badge"><ShieldCheck :size="18" /><span>Jev 安全判断</span></div>
+        <div><div class="eyebrow">{{ t('home.eyebrow') }} <span class="version-pill">v{{ state.version }}</span></div><h1>{{ t('home.title') }}</h1><p>{{ t('home.subtitle') }}</p></div>
+        <div class="jev-badge"><ShieldCheck :size="18" /><span>{{ t('home.safety') }}</span></div>
       </section>
 
       <section class="setup-card surface">
-        <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>选择对话区域</h2><p>{{ state.chat_rect_mode === 'wechat-client' ? '升级后请重新框选一次，之后可在任意桌面聊天应用上使用。' : state.chat_rect ? '桌面区域已校准；移动窗口或切换显示器后可重新框选。' : '打开任意聊天应用，框选屏幕上可见的对话消息。' }}</p></div></div>
-        <div class="setup-actions"><span v-if="state.chat_rect && state.chat_rect_mode !== 'wechat-client'" class="ready-chip"><CheckCircle2 :size="15" /> 已校准</span><button class="button button-outline" @click="calibrate">{{ state.chat_rect && state.chat_rect_mode !== 'wechat-client' ? '重新选择' : '框选对话区域' }} <ArrowRight :size="15" /></button></div>
+        <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>{{ t('capture.title') }}</h2><p>{{ state.chat_rect_mode === 'wechat-client' ? t('capture.legacy') : state.chat_rect ? t('capture.ready') : t('capture.help') }}</p></div></div>
+        <div class="setup-actions"><span v-if="state.chat_rect && state.chat_rect_mode !== 'wechat-client'" class="ready-chip"><CheckCircle2 :size="15" /> {{ t('capture.calibrated') }}</span><button class="button button-outline" @click="calibrate">{{ state.chat_rect && state.chat_rect_mode !== 'wechat-client' ? t('capture.again') : t('capture.select') }} <ArrowRight :size="15" /></button></div>
       </section>
 
       <div class="content-grid">
         <section class="surface analysis-card">
-          <div class="section-heading"><div class="heading-icon blue"><Sparkles :size="17" /></div><div><h2>对话分析</h2><p>读取已框选的桌面消息，获取 Jev 判断和建议回复</p></div></div>
-          <div class="status-line" :class="statusTone"><span class="status-dot"><LoaderCircle v-if="state.phase !== 'idle' && state.phase !== 'error'" :size="15" class="spin" /><span v-else></span></span><span>{{ state.status }}</span></div>
-          <button class="button button-primary analyze-button" :disabled="state.phase !== 'idle' && state.phase !== 'error'" @click="analyze"><Sparkles :size="17" />{{ state.phase !== 'idle' && state.phase !== 'error' ? '正在分析…' : '分析当前选区' }}<ArrowRight v-if="state.phase === 'idle' || state.phase === 'error'" :size="17" /></button>
-          <div class="privacy-note"><LockKeyhole :size="14" />选区 OCR 在本机完成；点击分析后才发送识别文字进行判断和回复生成。</div>
+          <div class="section-heading"><div class="heading-icon blue"><Sparkles :size="17" /></div><div><h2>{{ t('analysis.title') }}</h2><p>{{ t('analysis.help') }}</p></div></div>
+          <div class="status-line" :class="statusTone"><span class="status-dot"><LoaderCircle v-if="state.phase !== 'idle' && state.phase !== 'error'" :size="15" class="spin" /><span v-else></span></span><span>{{ display(state.status_message ?? state.status) }}</span></div>
+          <button class="button button-primary analyze-button" :disabled="state.phase !== 'idle' && state.phase !== 'error'" @click="analyze"><Sparkles :size="17" />{{ state.phase !== 'idle' && state.phase !== 'error' ? t('analysis.busy') : t('analysis.start') }}<ArrowRight v-if="state.phase === 'idle' || state.phase === 'error'" :size="17" /></button>
+          <div class="privacy-note"><LockKeyhole :size="14" />{{ t('analysis.privacy') }}</div>
         </section>
 
         <section class="surface model-card">
-          <div class="section-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>回复模型</h2><p>独立选择生成建议的模型</p></div></div>
-          <label class="field-label" for="active-model">当前模型</label>
-          <div class="select-wrap"><select id="active-model" v-model="state.active_model_id" :disabled="!state.profiles.length" @change="selectActiveModel"><option value="" disabled>选择一个模型</option><option v-for="profile in state.profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model }}</option></select><ChevronDown :size="16" /></div>
+          <div class="section-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>{{ t('model.title') }}</h2><p>{{ t('model.help') }}</p></div></div>
+          <label class="field-label" for="active-model">{{ t('model.current') }}</label>
+          <div class="select-wrap"><select id="active-model" v-model="state.active_model_id" :disabled="!state.profiles.length" @change="selectActiveModel"><option value="" disabled>{{ t('model.choose') }}</option><option v-for="profile in state.profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model }}</option></select><ChevronDown :size="16" /></div>
           <div v-if="activeProfile" class="model-meta"><span class="online-dot"></span><span>{{ activeProfile.name }}</span><span class="meta-separator">/</span><span class="model-id">{{ activeProfile.model }}</span></div>
-          <button class="text-action" @click="page = 'settings'"><Settings2 :size="15" />管理模型配置 <ArrowRight :size="14" /></button>
+          <button class="text-action" @click="page = 'settings'"><Settings2 :size="15" />{{ t('model.manage') }} <ArrowRight :size="14" /></button>
         </section>
       </div>
 
       <div class="results-grid">
         <section class="surface result-card messages-card">
-          <div class="result-heading"><div><span class="eyebrow">RECENT MESSAGES</span><h2>识别到的对话</h2></div><span class="count-pill">{{ state.preview.length }} 条</span></div>
-          <div v-if="state.preview.length" class="message-list"><div v-for="(message, index) in state.preview" :key="index" class="message-row" :class="message.side"><span class="message-avatar">{{ message.side === 'me' ? '我' : '对' }}</span><div class="message-bubble"><span class="speaker">{{ message.side === 'me' ? '我' : '对方' }}</span><span>{{ message.text }}</span></div></div></div>
-          <div v-else class="empty-state"><div class="empty-icon"><MessageCircle :size="20" /></div><span>分析后，最近识别的消息会显示在这里</span></div>
+          <div class="result-heading"><div><span class="eyebrow">{{ t('messages.eyebrow') }}</span><h2>{{ t('messages.title') }}</h2></div><span class="count-pill">{{ t('messages.count', { count: state.preview.length }) }}</span></div>
+          <div v-if="state.preview.length" class="message-list"><div v-for="(message, index) in state.preview" :key="index" class="message-row" :class="message.side"><span class="message-avatar">{{ message.side === 'me' ? t('messages.me') : t('messages.avatarOther') }}</span><div class="message-bubble"><span class="speaker">{{ message.side === 'me' ? t('messages.me') : t('messages.other') }}</span><span>{{ message.text }}</span></div></div></div>
+          <div v-else class="empty-state"><div class="empty-icon"><MessageCircle :size="20" /></div><span>{{ t('messages.empty') }}</span></div>
         </section>
         <section class="surface result-card judgement-card">
-          <div class="result-heading"><div><span class="eyebrow">JEV INSIGHT</span><h2>对话判断</h2></div><span v-if="state.analysis" class="confidence-pill"><ShieldCheck :size="14" /> 已完成</span></div>
+          <div class="result-heading"><div><span class="eyebrow">{{ t('insight.eyebrow') }}</span><h2>{{ t('insight.title') }}</h2></div><span v-if="state.analysis" class="confidence-pill"><ShieldCheck :size="14" /> {{ t('common.done') }}</span></div>
           <template v-if="state.analysis">
-            <div class="insight-primary"><div class="insight-label">对方的真实意图</div><div class="intent-value">{{ intentLabels[state.analysis.true_intent] || state.analysis.true_intent || '—' }}</div><div class="danger-meter"><span>危险程度</span><strong>{{ danger(state.analysis.danger_level) }}</strong></div></div>
-            <div class="insight-stats"><div><span>对方需要</span><strong>{{ needLabels[state.analysis.need] || state.analysis.need || '—' }}</strong></div><div><span>建议动作</span><strong>{{ actionLabels[state.analysis.best_action] || state.analysis.best_action || '—' }}</strong></div><div><span>需要实质回复</span><strong>{{ percent(state.analysis.should_reply_now) }}</strong></div><div><span>紧张已化解</span><strong>{{ percent(state.analysis.tension_resolved) }}</strong></div></div>
-            <div class="latency">判断耗时 {{ state.analysis.latency_ms }} ms</div>
+            <div class="insight-primary"><div class="insight-label">{{ t('insight.intent') }}</div><div class="intent-value">{{ intentLabels[state.analysis.true_intent] || state.analysis.true_intent || '—' }}</div><div class="danger-meter"><span>{{ t('insight.danger') }}</span><strong>{{ danger(state.analysis.danger_level) }}</strong></div></div>
+            <div class="insight-stats"><div><span>{{ t('insight.need') }}</span><strong>{{ needLabels[state.analysis.need] || state.analysis.need || '—' }}</strong></div><div><span>{{ t('insight.action') }}</span><strong>{{ actionLabels[state.analysis.best_action] || state.analysis.best_action || '—' }}</strong></div><div><span>{{ t('insight.reply') }}</span><strong>{{ percent(state.analysis.should_reply_now) }}</strong></div><div><span>{{ t('insight.resolved') }}</span><strong>{{ percent(state.analysis.tension_resolved) }}</strong></div></div>
+            <div class="latency">{{ t('insight.latency', { count: state.analysis.latency_ms }) }}</div>
           </template>
-          <div v-else class="empty-state"><div class="empty-icon"><ShieldCheck :size="20" /></div><span>完成一次分析后，这里会显示 Jev 的判断</span></div>
+          <div v-else class="empty-state"><div class="empty-icon"><ShieldCheck :size="20" /></div><span>{{ t('insight.empty') }}</span></div>
         </section>
       </div>
 
       <section class="surface suggestions-section">
-        <div class="result-heading"><div><span class="eyebrow">SUGGESTED REPLIES</span><h2>建议回复</h2></div><span class="suggestion-caption">参考建议，请按你的判断修改</span></div>
-        <div v-if="state.suggestions.length" class="suggestion-list"><article v-for="(suggestion, index) in state.suggestions" :key="index" class="suggestion-item"><span class="suggestion-number">0{{ index + 1 }}</span><div class="suggestion-copy"><p>{{ suggestion.text }}<span v-if="suggestion.recommended" class="recommend-badge">推荐</span></p><div class="suggestion-confidence"><span>Jev 推荐度 <strong>{{ percent(suggestion.probability) }}</strong></span><span v-if="suggestion.confidence !== null">Jev 置信度 <strong>{{ percent(suggestion.confidence) }}</strong></span></div></div><button class="copy-button" @click="copyReply(suggestion.text)"><Copy :size="15" />复制</button></article></div>
-        <div v-else class="suggestion-empty"><Sparkles :size="16" />{{ state.profiles.length ? '完成分析和 Jev 评估后，这里会显示回复建议及推荐度。' : '添加一个回复模型后，即可生成和比较候选回复。' }}<button class="inline-link" @click="page = 'settings'">配置模型 <ArrowRight :size="13" /></button></div>
+        <div class="result-heading"><div><span class="eyebrow">{{ t('replies.eyebrow') }}</span><h2>{{ t('replies.title') }}</h2></div><span class="suggestion-caption">{{ t('replies.caption') }}</span></div>
+        <div v-if="state.suggestions.length" class="suggestion-list"><article v-for="(suggestion, index) in state.suggestions" :key="index" class="suggestion-item"><span class="suggestion-number">0{{ index + 1 }}</span><div class="suggestion-copy"><p>{{ suggestion.text }}<span v-if="suggestion.recommended" class="recommend-badge">{{ t('replies.recommended') }}</span></p><div class="suggestion-confidence"><span>{{ t('replies.score') }} <strong>{{ percent(suggestion.probability) }}</strong></span><span v-if="suggestion.confidence !== null">{{ t('replies.confidence') }} <strong>{{ percent(suggestion.confidence) }}</strong></span></div></div><button class="copy-button" @click="copyReply(suggestion.text)"><Copy :size="15" />{{ t('common.copy') }}</button></article></div>
+        <div v-else class="suggestion-empty"><Sparkles :size="16" />{{ state.profiles.length ? t('replies.empty') : t('replies.setup') }}<button class="inline-link" @click="page = 'settings'">{{ t('replies.configure') }} <ArrowRight :size="13" /></button></div>
       </section>
     </template>
 
     <template v-else>
-      <section class="settings-heading"><button class="back-button" @click="page = 'home'"><ArrowLeft :size="17" /></button><div><div class="eyebrow">PREFERENCES</div><h1>设置</h1><p>管理判断服务、回复模型与对话偏好</p></div></section>
+      <section class="settings-heading"><button class="back-button" :aria-label="t('common.back')" @click="page = 'home'"><ArrowLeft :size="17" /></button><div><div class="eyebrow">{{ t('settings.eyebrow') }}</div><h1>{{ t('common.settings') }}</h1><p>{{ t('settings.help') }}</p></div></section>
       <div class="settings-layout">
-        <nav class="settings-nav"><a class="nav-item current"><ShieldCheck :size="16" /> Jev 判断 <ChevronRight :size="15" /></a><a class="nav-item"><Bot :size="16" /> 回复模型 <ChevronRight :size="15" /></a><a class="nav-item"><MessageCircle :size="16" /> 对话偏好 <ChevronRight :size="15" /></a><div class="nav-tip"><LockKeyhole :size="15" /><span>API Key 安全保存在 Windows 凭据管理器中，不会写入设置文件。</span></div></nav>
+        <nav class="settings-nav"><a class="nav-item current"><ShieldCheck :size="16" /> {{ t('settings.judge') }} <ChevronRight :size="15" /></a><a class="nav-item"><Bot :size="16" /> {{ t('model.title') }} <ChevronRight :size="15" /></a><a class="nav-item"><MessageCircle :size="16" /> {{ t('settings.preferences') }} <ChevronRight :size="15" /></a><div class="nav-tip"><LockKeyhole :size="15" /><span>{{ t('settings.keyNote') }}</span></div></nav>
         <div class="settings-content">
+          <section class="surface settings-panel language-panel">
+            <h2><label for="interface-language">{{ t('language.title') }}</label></h2>
+            <div class="select-wrap"><select id="interface-language" :value="state.language" :disabled="languageBusy || busy" @change="changeLanguage">
+              <option value="system">{{ t('language.system') }}</option>
+              <option v-for="item in languages" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select><ChevronDown :size="16" /></div>
+            <p class="field-hint">{{ t('language.hint') }}</p>
+          </section>
           <section class="surface settings-panel">
-            <div class="panel-heading"><div class="heading-icon blue"><ShieldCheck :size="17" /></div><div><h2>Jev 判断服务</h2><p>使用 TypeSafe Jev 进行结构化对话判断</p></div><span class="required-tag">独立配置</span></div>
-          <label class="field-label" for="jev-key">Jev / TypeSafe API Key</label><div class="input-with-icon"><KeyRound :size="16" /><input id="jev-key" v-model="jevKey" :type="jevKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="state.jev_key_configured ? '已保存密钥；留空保持不变' : '输入 TypeSafe API Key'" /><button class="field-icon-button" :aria-label="jevKeyVisible ? '隐藏密钥' : '显示密钥'" @click="jevKeyVisible = !jevKeyVisible"><EyeOff v-if="jevKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div>
-            <div class="field-hint"><span><span class="online-dot"></span>{{ state.jev_key_configured && !clearJevKey ? '密钥已保存在本机' : '密钥仅用于 Jev 判断' }}</span><button v-if="state.jev_key_configured" class="danger-link" @click="clearJevKey = !clearJevKey">{{ clearJevKey ? '撤销清除' : '清除密钥' }}</button></div>
+            <div class="panel-heading"><div class="heading-icon blue"><ShieldCheck :size="17" /></div><div><h2>{{ t('settings.service') }}</h2><p>{{ t('settings.serviceHelp') }}</p></div><span class="required-tag">{{ t('settings.independent') }}</span></div>
+          <label class="field-label" for="jev-key">Jev / TypeSafe API Key</label><div class="input-with-icon"><KeyRound :size="16" /><input id="jev-key" v-model="jevKey" :type="jevKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="state.jev_key_configured ? t('key.savedHint') : t('key.jevPlaceholder')" /><button class="field-icon-button" :aria-label="jevKeyVisible ? t('key.hide') : t('key.show')" @click="jevKeyVisible = !jevKeyVisible"><EyeOff v-if="jevKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div>
+            <div class="field-hint"><span><span class="online-dot"></span>{{ state.jev_key_configured && !clearJevKey ? t('key.local') : t('key.jevOnly') }}</span><button v-if="state.jev_key_configured" class="danger-link" @click="clearJevKey = !clearJevKey">{{ clearJevKey ? t('key.undo') : t('key.clear') }}</button></div>
           </section>
 
           <section class="surface settings-panel models-panel">
-            <div class="panel-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>回复模型</h2><p>可按 OpenAI Chat、Responses 或 Anthropic 协议接入</p></div><span class="count-pill">{{ state.profiles.length }} 个配置</span></div>
-            <div v-if="state.profiles.length" class="configured-models"><article v-for="profile in state.profiles" :key="profile.id" class="configured-model" :class="{ active: profile.id === state.active_model_id }"><button class="radio-mark" :aria-label="`选择 ${profile.name}`" @click="state.active_model_id = profile.id"><Check v-if="profile.id === state.active_model_id" :size="13" /></button><button class="configured-main" @click="state.active_model_id = profile.id"><span class="configured-name">{{ profile.name }}<span v-if="profile.id === state.active_model_id" class="active-tag">当前使用</span></span><span class="configured-model-id">{{ profile.model }}</span><span class="configured-endpoint">{{ profile.base_url }}</span></button><span class="key-state" :class="{ ready: profile.key_configured || !!profile.api_key }"><KeyRound :size="13" />{{ profile.key_configured || profile.api_key ? '密钥已设置' : '缺少密钥' }}</span><button class="small-icon" title="编辑" @click="editModel(profile)"><Settings2 :size="15" /></button><button class="small-icon delete-icon" title="删除" @click="removeModel(profile)"><Trash2 :size="15" /></button></article></div>
-            <div v-else class="models-empty"><Bot :size="20" /><span>还没有配置回复模型</span><small>添加兼容 OpenAI API 的模型，用于起草候选回复。</small></div>
-            <button class="add-model-button" @click="addModel"><Plus :size="16" />添加模型配置</button>
+            <div class="panel-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>{{ t('model.title') }}</h2><p>{{ t('model.protocolHelp') }}</p></div><span class="count-pill">{{ t('model.count', { count: state.profiles.length }) }}</span></div>
+            <div v-if="state.profiles.length" class="configured-models"><article v-for="profile in state.profiles" :key="profile.id" class="configured-model" :class="{ active: profile.id === state.active_model_id }"><button class="radio-mark" :aria-label="t('common.select', { name: profile.name })" @click="state.active_model_id = profile.id"><Check v-if="profile.id === state.active_model_id" :size="13" /></button><button class="configured-main" @click="state.active_model_id = profile.id"><span class="configured-name">{{ profile.name }}<span v-if="profile.id === state.active_model_id" class="active-tag">{{ t('model.active') }}</span></span><span class="configured-model-id">{{ profile.model }}</span><span class="configured-endpoint">{{ profile.base_url }}</span></button><span class="key-state" :class="{ ready: profile.key_configured || !!profile.api_key }"><KeyRound :size="13" />{{ profile.key_configured || profile.api_key ? t('key.configured') : t('key.missing') }}</span><button class="small-icon" :title="t('common.edit')" @click="editModel(profile)"><Settings2 :size="15" /></button><button class="small-icon delete-icon" :title="t('common.delete')" @click="removeModel(profile)"><Trash2 :size="15" /></button></article></div>
+            <div v-else class="models-empty"><Bot :size="20" /><span>{{ t('model.empty') }}</span><small>{{ t('model.emptyHelp') }}</small></div>
+            <button class="add-model-button" @click="addModel"><Plus :size="16" />{{ t('model.addConfig') }}</button>
           </section>
 
           <section class="surface settings-panel">
-            <div class="panel-heading"><div class="heading-icon amber"><MessageCircle :size="17" /></div><div><h2>对话偏好</h2><p>帮助 Jev 和回复模型更了解你的场景</p></div></div>
-            <label class="field-label" for="relationship">关系说明</label><textarea id="relationship" v-model="state.relationship" rows="3" placeholder="例如：对方是我的朋友"></textarea>
-            <label class="field-label spaced" for="allowed-titles">会话白名单</label><input id="allowed-titles" class="plain-input" :value="state.allowed_titles.join('，')" placeholder="逗号分隔；留空允许所有会话" @input="state.allowed_titles = ($event.target as HTMLInputElement).value.replaceAll(',', '，').split('，').map(item => item.trim()).filter(Boolean)" />
-            <div class="field-hint">仅允许分析标题包含指定文字的会话</div>
+            <div class="panel-heading"><div class="heading-icon amber"><MessageCircle :size="17" /></div><div><h2>{{ t('settings.preferences') }}</h2><p>{{ t('settings.contextHelp') }}</p></div></div>
+            <label class="field-label" for="relationship">{{ t('settings.relationship') }}</label><textarea id="relationship" v-model="state.relationship" rows="3" :placeholder="t('settings.relationshipHint')"></textarea>
+            <label class="field-label spaced" for="allowed-titles">{{ t('settings.allowlist') }}</label><input id="allowed-titles" class="plain-input" :value="state.allowed_titles.join('，')" :placeholder="t('settings.allowlistHint')" @input="state.allowed_titles = ($event.target as HTMLInputElement).value.replaceAll(',', '，').split('，').map(item => item.trim()).filter(Boolean)" />
+            <div class="field-hint">{{ t('settings.allowlistHelp') }}</div>
           </section>
-          <div class="save-bar"><span><LockKeyhole :size="14" />设置与密钥分别安全保存</span><button class="button button-primary" :disabled="busy" @click="saveSettings"><LoaderCircle v-if="busy" :size="16" class="spin" /><Save v-else :size="16" />{{ busy ? '正在保存…' : '保存设置' }}</button></div>
+          <div class="save-bar"><span><LockKeyhole :size="14" />{{ t('settings.storage') }}</span><button class="button button-primary" :disabled="busy || languageBusy" @click="saveSettings"><LoaderCircle v-if="busy" :size="16" class="spin" /><Save v-else :size="16" />{{ busy ? t('settings.saving') : t('settings.save') }}</button></div>
         </div>
       </div>
     </template>
 
-    <footer class="app-footer"><span>Jev 对话助手 <span class="footer-divider">·</span> 只辅助，不代发</span><button @click="notify('所有建议都需要你自行判断，不会自动发送。')"><CircleHelp :size="14" /> 使用说明</button></footer>
+    <footer class="app-footer"><span>{{ t('app.name') }} <span class="footer-divider">·</span> {{ t('footer.promise') }}</span><button @click="notify(m('footer.notice'))"><CircleHelp :size="14" /> {{ t('footer.help') }}</button></footer>
 
     <div v-if="showModel" class="modal-backdrop">
-      <section class="model-dialog">
-        <header class="dialog-header"><div><div class="dialog-kicker">MODEL PROVIDER</div><h2>{{ editingId ? '编辑模型' : '添加模型' }}</h2></div><button class="small-icon" aria-label="关闭" @click="showModel = false"><X :size="19" /></button></header>
+      <section class="model-dialog" role="dialog" aria-modal="true" :aria-label="editingId ? t('model.edit') : t('model.add')">
+        <header class="dialog-header"><div><div class="dialog-kicker">{{ t('model.eyebrow') }}</div><h2>{{ editingId ? t('model.edit') : t('model.add') }}</h2></div><button class="small-icon" :aria-label="t('common.close')" @click="showModel = false"><X :size="19" /></button></header>
         <div class="dialog-scroll">
-          <label class="field-label" for="provider">接口协议 / 供应商</label><div class="select-wrap provider-select"><select id="provider" :value="draft.name === 'DeepSeek' ? 'deepseek' : draft.protocol" @change="chooseProvider(($event.target as HTMLSelectElement).value)"><option value="openai-chat">openai-chat</option><option value="openai-responses">openai-responses</option><option value="anthropic">anthropic</option><option value="deepseek">DeepSeek（openai-chat）</option></select><ChevronDown :size="16" /></div>
-          <label class="field-label" for="provider-name">显示名称</label><input id="provider-name" v-model="draft.name" class="plain-input" placeholder="例如：我的模型服务" />
-          <label class="field-label" for="base-url">接口地址</label><input id="base-url" v-model="draft.base_url" class="plain-input" :placeholder="endpointPlaceholder" autocomplete="url" />
-          <label class="field-label" for="model-key">API Key</label><div class="key-entry-row"><div class="input-with-icon key-input"><KeyRound :size="16" /><input id="model-key" v-model="draft.api_key" :type="draftKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="editingId && draft.key_configured ? '已保存密钥；留空保持不变' : '输入此接口的 API Key'" /><button class="field-icon-button" @click="draftKeyVisible = !draftKeyVisible"><EyeOff v-if="draftKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div><button class="button button-outline test-button" :disabled="testing || !draft.base_url || !draft.model" @click="testConnection"><LoaderCircle v-if="testing" :size="15" class="spin" /><span v-else>测试连接</span></button></div>
-          <label class="field-label" for="model-name">模型名称</label>
+          <label class="field-label" for="provider">{{ t('model.protocol') }}</label><div class="select-wrap provider-select"><select id="provider" :value="draft.name === 'DeepSeek' ? 'deepseek' : draft.protocol" @change="chooseProvider(($event.target as HTMLSelectElement).value)"><option value="openai-chat">openai-chat</option><option value="openai-responses">openai-responses</option><option value="anthropic">anthropic</option><option value="deepseek">DeepSeek（openai-chat）</option></select><ChevronDown :size="16" /></div>
+          <label class="field-label" for="provider-name">{{ t('model.displayName') }}</label><input id="provider-name" v-model="draft.name" class="plain-input" :placeholder="t('model.displayHint')" />
+          <label class="field-label" for="base-url">{{ t('model.url') }}</label><input id="base-url" v-model="draft.base_url" class="plain-input" :placeholder="endpointPlaceholder" autocomplete="url" />
+          <label class="field-label" for="model-key">API Key</label><div class="key-entry-row"><div class="input-with-icon key-input"><KeyRound :size="16" /><input id="model-key" v-model="draft.api_key" :type="draftKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="editingId && draft.key_configured ? t('key.savedHint') : t('key.modelPlaceholder')" /><button class="field-icon-button" :aria-label="draftKeyVisible ? t('key.hide') : t('key.show')" @click="draftKeyVisible = !draftKeyVisible"><EyeOff v-if="draftKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div><button class="button button-outline test-button" :disabled="testing || !draft.base_url || !draft.model" @click="testConnection"><LoaderCircle v-if="testing" :size="15" class="spin" /><span v-else>{{ t('model.test') }}</span></button></div>
+          <label class="field-label" for="model-name">{{ t('model.name') }}</label>
           <div class="model-name-wrap">
-            <input id="model-name" ref="modelNameInput" v-model="draft.model" class="plain-input" placeholder="输入或选择模型，例如 gpt-4o" autocomplete="off"
+            <input id="model-name" ref="modelNameInput" v-model="draft.model" class="plain-input" :placeholder="t('model.nameHint')" autocomplete="off"
               @focus="modelOptions.length && (showModelList = true)"
               @input="modelListIndex = -1; showModelList = !!filteredModelOptions().length"
               @blur="closeModelList()"
               @keydown="onModelNameKeydown" />
-            <button v-if="modelOptions.length" class="field-icon-button" tabindex="-1" aria-label="展开模型列表"
+            <button v-if="modelOptions.length" class="field-icon-button" tabindex="-1" :aria-label="t('model.expand')"
               @mousedown.prevent="showModelList = !showModelList" @click="modelNameInput?.focus()"><ChevronDown :size="16" /></button>
             <ul v-if="showModelList && filteredModelOptions().length" class="model-dropdown" @mousedown.prevent>
               <li v-for="(model, index) in filteredModelOptions()" :key="model" :class="{ selected: index === modelListIndex }"
                 @mouseenter="modelListIndex = index" @mousedown.prevent="chooseModel(model)">{{ model }}</li>
             </ul>
           </div>
-          <div class="model-list-row"><span :class="{ 'success-text': modelOptions.length }"><LoaderCircle v-if="modelBusy" :size="13" class="spin" /><CheckCircle2 v-else-if="modelOptions.length" :size="13" /><span v-else class="soft-dot"></span>{{ modelStatus }}</span><button class="refresh-button" :disabled="modelBusy || !canFetchModels()" @click="refreshModels()"><RefreshCw :size="14" :class="{ spin: modelBusy }" />刷新列表</button></div>
-          <div class="advanced-heading"><span>高级配置</span><span class="muted">可选</span></div>
-          <label class="field-label" for="max-tokens">输出长度</label><div class="token-input-wrap"><input id="max-tokens" v-model.number="draft.max_tokens" class="plain-input" type="number" min="1" max="131072" placeholder="使用服务商默认值" /><span>tokens</span></div>
-          <div class="token-presets"><button v-for="amount in [800, 2000, 4000, 8000]" :key="amount" @click="draft.max_tokens = amount">{{ amount.toLocaleString() }}</button></div>
+          <div class="model-list-row"><span :class="{ 'success-text': modelOptions.length }"><LoaderCircle v-if="modelBusy" :size="13" class="spin" /><CheckCircle2 v-else-if="modelOptions.length" :size="13" /><span v-else class="soft-dot"></span>{{ display(modelStatus) }}</span><button class="refresh-button" :disabled="modelBusy || !canFetchModels()" @click="refreshModels()"><RefreshCw :size="14" :class="{ spin: modelBusy }" />{{ t('model.refresh') }}</button></div>
+          <div class="advanced-heading"><span>{{ t('model.advanced') }}</span><span class="muted">{{ t('common.optional') }}</span></div>
+          <label class="field-label" for="max-tokens">{{ t('model.tokens') }}</label><div class="token-input-wrap"><input id="max-tokens" v-model.number="draft.max_tokens" class="plain-input" type="number" min="1" max="131072" :placeholder="t('model.defaultTokens')" /><span>tokens</span></div>
+          <div class="token-presets"><button v-for="amount in [800, 2000, 4000, 8000]" :key="amount" @click="draft.max_tokens = amount">{{ amount.toLocaleString(locale) }}</button></div>
         </div>
-        <footer class="dialog-footer"><span class="dialog-safe"><LockKeyhole :size="14" />密钥仅保存在 Windows 凭据管理器</span><div><button class="button button-quiet" @click="showModel = false">取消</button><button class="button button-primary" @click="saveModel"><Check :size="16" />保存</button></div></footer>
+        <footer class="dialog-footer"><span class="dialog-safe"><LockKeyhole :size="14" />{{ t('model.keyStorage') }}</span><div><button class="button button-quiet" @click="showModel = false">{{ t('common.cancel') }}</button><button class="button button-primary" @click="saveModel"><Check :size="16" />{{ t('common.save') }}</button></div></footer>
       </section>
     </div>
-    <Transition name="toast"><div v-if="toast" class="toast-message" :class="{ error: toastError }"><CheckCircle2 v-if="!toastError" :size="17" /><CircleHelp v-else :size="17" />{{ toast }}</div></Transition>
+    <div v-if="pendingDelete" class="modal-backdrop" @keydown.esc="pendingDelete = null">
+      <section class="model-dialog confirm-dialog" role="alertdialog" aria-modal="true" :aria-label="t('common.delete')">
+        <div class="dialog-header"><h2>{{ t('model.confirmDelete', { name: pendingDelete.name }) }}</h2></div>
+        <footer class="dialog-footer"><button class="button button-quiet" @click="pendingDelete = null">{{ t('common.cancel') }}</button><button class="button button-primary" @click="confirmDelete">{{ t('common.delete') }}</button></footer>
+      </section>
+    </div>
+    <Transition name="toast"><div v-if="toast" class="toast-message" :class="{ error: toastError }"><CheckCircle2 v-if="!toastError" :size="17" /><CircleHelp v-else :size="17" />{{ display(toast) }}</div></Transition>
   </main>
 </template>
 

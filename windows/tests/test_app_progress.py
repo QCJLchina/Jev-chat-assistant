@@ -34,7 +34,7 @@ def test_second_analysis_cannot_start_while_first_worker_is_pending(monkeypatch)
     monkeypatch.setattr(
         AppConfig,
         "load",
-        classmethod(lambda cls: cls(chat_rect=Rect(0, 0, 800, 600))),
+        classmethod(lambda cls: cls(language="zh-CN", chat_rect=Rect(0, 0, 800, 600))),
     )
     monkeypatch.setattr(app, "load_api_key", lambda: "test-key")
     monkeypatch.setattr(app, "load_model_api_key", lambda _profile_id: "")
@@ -53,7 +53,10 @@ def test_second_analysis_cannot_start_while_first_worker_is_pending(monkeypatch)
 
     assert api.analyze() == {"ok": True}
     assert api.get_progress()["phase"] == "capturing"
-    assert api.analyze() == {"ok": False, "error": "分析正在进行中。"}
+    result = api.analyze()
+    assert result["ok"] is False
+    assert result["error"] == "分析正在进行中。"
+    assert result["error_message"]["key"] == "error.busy"
     assert len(started) == 1
 
 

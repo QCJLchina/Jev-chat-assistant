@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .i18n import msg
+
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -110,7 +112,7 @@ def find_wechat_window() -> WeChatWindow:
 
     win32gui.EnumWindows(collect, None)
     if not candidates:
-        raise RuntimeError("未找到可见的电脑版微信窗口，请先打开微信并进入一个聊天。")
+        raise RuntimeError(msg("error.noWechat"))
     return max(candidates, key=lambda item: item.rect.width * item.rect.height)
 
 

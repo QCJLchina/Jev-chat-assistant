@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvPath = Join-Path $ProjectRoot ".venv-windows-py312"
 $PythonExe = Join-Path $VenvPath "Scripts\python.exe"
@@ -45,6 +45,7 @@ try {
         --collect-all uiautomation `
         --collect-all webview `
         --add-data "$(Join-Path $FrontendPath 'dist');frontend\dist" `
+        --add-data "$(Join-Path $PSScriptRoot 'locales');locales" `
         --hidden-import webview.platforms.edgechromium `
         --hidden-import win32timezone `
         (Join-Path $PSScriptRoot "run.pyw")

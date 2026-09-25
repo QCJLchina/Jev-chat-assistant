@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .i18n import msg
+
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -62,7 +64,7 @@ def _ocr_boxes(area: Rect, image: object | None = None) -> list[TextBox]:
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as exc:
-        raise RuntimeError("未安装本地 OCR 组件，请运行 windows\\install.ps1。") from exc
+        raise RuntimeError(msg("error.ocrMissing")) from exc
 
     global _OCR_ENGINE
     if image is None:
@@ -147,15 +149,15 @@ def capture_chat(window: WeChatWindow, relative_chat_rect: Rect) -> ChatSnapshot
         or area.right > client.right
         or area.bottom > client.bottom
     ):
-        raise RuntimeError("微信窗口尺寸已变化，请重新框选聊天区域。")
+        raise RuntimeError(msg("error.windowChanged"))
     boxes = _uia_boxes(window, area)
     if not boxes:
         boxes = _ocr_boxes(area)
     messages = _boxes_to_messages(boxes, area)
     if not messages:
-        raise RuntimeError("没有识别到聊天文字，请确认聊天窗口可见并重新框选聊天区域。")
+        raise RuntimeError(msg("error.noChatText"))
     raw_text = "\n".join(box.text for box in boxes)
-    return ChatSnapshot(window.title or "微信聊天", messages, raw_text)
+    return ChatSnapshot(window.title or msg("capture.wechatTitle"), messages, raw_text)
 
 
 def capture_desktop_chat(
@@ -174,7 +176,7 @@ def capture_desktop_chat(
         or screen_rect.right > desktop.right
         or screen_rect.bottom > desktop.bottom
     ):
-        raise RuntimeError("框选区域已超出屏幕范围，请重新框选。")
+        raise RuntimeError(msg("error.offscreen"))
     if capture_frame is None:
         image = screenshot(screen_rect)
         title = window_title_at(
@@ -186,5 +188,5 @@ def capture_desktop_chat(
     boxes = _ocr_boxes(screen_rect, image)
     messages = _boxes_to_messages(boxes, screen_rect)
     if not messages:
-        raise RuntimeError("选区内没有识别到对话文字，请重新框选消息区域。")
-    return ChatSnapshot(title or "桌面对话", messages, "\n".join(box.text for box in boxes))
+        raise RuntimeError(msg("error.noText"))
+    return ChatSnapshot(title or msg("capture.desktopTitle"), messages, "\n".join(box.text for box in boxes))

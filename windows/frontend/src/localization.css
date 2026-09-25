@@ -1,0 +1,55 @@
+/* System fonts keep all five scripts available in offline Windows builds. */
+:root { font-family: 'Segoe UI', 'Yu Gothic UI', 'Microsoft YaHei UI', sans-serif; }
+.brand-name, .welcome-row h1, .settings-heading h1 { font-family: inherit; }
+.button, .copy-button, .refresh-button, .small-icon, .icon-button { flex-shrink: 0; }
+.button, .nav-item, .copy-button { white-space: normal; overflow-wrap: anywhere; }
+.button svg, .panel-heading svg, .section-heading svg, .privacy-note svg,
+.status-dot, .field-hint svg, .nav-item svg, .app-footer svg { flex-shrink: 0; }
+.topbar { min-height: 78px; height: auto; gap: 14px; padding-block: 12px; }
+.brand-lockup, .brand-name, .setup-copy, .panel-heading, .section-heading,
+.result-heading, .model-meta, .configured-name, .save-bar { min-width: 0; }
+.brand-name, .setup-actions, .model-meta, .configured-name, .field-hint,
+.save-bar, .dialog-footer, .top-actions { flex-wrap: wrap; }
+.brand-caption { letter-spacing: .5px; }
+.welcome-row { gap: 20px; }
+.welcome-row > div:first-child { min-width: 0; flex: 1; }
+.setup-card { gap: 16px; }
+.setup-copy { flex: 1; }
+.setup-actions { justify-content: flex-end; }
+.setup-copy p, .section-heading p, .panel-heading p, .privacy-note,
+.field-hint, .status-line, .dialog-safe, .nav-item { line-height: 1.55; }
+.status-line { padding-block: 8px; overflow-wrap: anywhere; }
+.privacy-note { align-items: flex-start; }
+.result-heading { gap: 10px; }
+.count-pill, .confidence-pill { flex-shrink: 0; }
+.message-avatar { font-size: 9px; }
+.message-bubble, .suggestion-copy, .intent-value, .insight-stats strong,
+.configured-main, .model-list-row, .toast-message { overflow-wrap: anywhere; }
+.message-row .message-avatar { width: 28px; }
+.settings-nav { width: 100%; }
+.language-panel h2 { margin: 0 0 12px; font-size: 13px; }
+.language-panel .field-hint { margin-bottom: 0; }
+.key-input { min-width: 0; }
+.key-state { white-space: normal; max-width: 95px; }
+.configured-endpoint { max-width: 100%; }
+.dialog-safe { flex: 1 1 150px; line-height: 1.5; }
+.dialog-footer > div { flex-wrap: wrap; justify-content: flex-end; }
+.confirm-dialog { max-width: 520px; }
+.confirm-dialog h2 { overflow-wrap: anywhere; }
+.app-footer { gap: 12px; line-height: 1.6; }
+.app-footer > span { min-width: 0; }
+.app-footer > button { flex-shrink: 0; }
+.save-bar { gap: 12px; }
+@media (max-width: 1000px) {
+  .setup-card { flex-wrap: wrap; }
+  .setup-actions { margin-left: auto; }
+  .suggestion-item { flex-wrap: wrap; }
+  .suggestion-item .copy-button { margin-left: auto; }
+}
+@media (max-width: 820px) {
+  .content-grid, .results-grid { grid-template-columns: minmax(0, 1fr); }
+  .key-entry-row { flex-wrap: wrap; }
+  .key-input { flex-basis: 100%; }
+  .configured-model { flex-wrap: wrap; }
+  .configured-main { flex-basis: 50%; }
+}

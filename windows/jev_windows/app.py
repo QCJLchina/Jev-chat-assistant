@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from .i18n import msg
+
 import json
+import os
+from dataclasses import replace
+from .i18n import LANGUAGES, bridge_errors, describe, render, resolve_language, settings_lock, translate
 import re
 import sys
 import threading
@@ -66,20 +71,28 @@ class DesktopApi:
 
     def __init__(self):
         self.settings = AppConfig.load()
+        self.resolved_language = resolve_language(self.settings.language)
         self.window = None
         self._lock = threading.RLock()
         self._state = {
-            "status": "请先设置 Jev API 密钥并框选聊天区",
+            "status": msg("status.initial"),
             "phase": "idle",
             "preview": [],
             "analysis": None,
             "suggestions": [],
             "error": "",
         }
+        self._state["status_message"] = describe(self._state["status"])
+        self._state["error_message"] = None
         self._state_revision = 0
 
     def _set_progress(self, **updates: object) -> None:
         with self._lock:
+            for field in ("status", "error"):
+                if field in updates:
+                    updates[field + "_message"] = describe(updates[field])
+                    if isinstance(updates[field], Exception):
+                        updates[field] = str(updates[field])
             self._state.update(updates)
             self._state_revision += 1
 
@@ -88,7 +101,35 @@ class DesktopApi:
             revision = self._state_revision
             if known_revision == revision:
                 return {"revision": revision}
-            return {"revision": revision, **self._state}
+            return {"revision": revision, **self._render_state()}
+
+    def _render_state(self) -> dict:
+        state = dict(self._state)
+        for field in ("status", "error"):
+            state[field] = render(state.get(field + "_message"), self.resolved_language, str(state[field]))
+        return state
+
+    @bridge_errors
+    def set_language(self, language: str) -> dict:
+        if not isinstance(language, str) or language not in LANGUAGES:
+            raise ValueError(msg("language.invalid"))
+        with self._lock:
+            resolved = resolve_language(language)
+            candidate = replace(self.settings, language=language)
+            try:
+                candidate.save()
+            except Exception as exc:
+                raise RuntimeError(msg("language.failed", detail=str(exc))) from None
+            self.settings.language = language
+            self.resolved_language = resolved
+            self._state_revision += 1
+        # pywebview title updates marshal to the UI thread; never block the bridge.
+        if self.window:
+            threading.Thread(target=self._update_title, daemon=True).start()
+        return {"language": language, "resolved_language": resolved}
+
+    def _update_title(self) -> None:
+        self.window.set_title(translate("app.title", self.resolved_language, version=__version__))
 
     def _safe_profile(self, profile: ModelProfile) -> dict:
         return {
@@ -103,12 +144,14 @@ class DesktopApi:
 
     def get_state(self) -> dict:
         with self._lock:
-            state = dict(self._state)
+            state = self._render_state()
             revision = self._state_revision
         return {
             **state,
             "revision": revision,
             "version": __version__,
+            "language": self.settings.language,
+            "resolved_language": self.resolved_language,
             "chat_rect": _rect_data(self.settings.chat_rect),
             "chat_rect_mode": self.settings.chat_rect_mode,
             "jev_key_configured": bool(load_api_key()),
@@ -118,24 +161,26 @@ class DesktopApi:
             "active_model_id": self.settings.active_model_id,
         }
 
+    @bridge_errors
     def fetch_models(self, payload: str | dict) -> dict:
         data = json.loads(payload) if isinstance(payload, str) else payload
         base_url = str(data.get("base_url", "")).strip()
         key = str(data.get("api_key", "")).strip()
         protocol = str(data.get("protocol", "openai-chat"))
         if protocol not in SUPPORTED_PROTOCOLS:
-            raise ValueError("请选择 openai-chat、openai-responses 或 anthropic 协议。")
+            raise ValueError(msg("error.protocolChoices"))
         if not key:
             key = os.environ.get("OPENAI_API_KEY", "").strip()
         return {"models": list_models(base_url, key, protocol=protocol)}
 
+    @bridge_errors
     def test_model(self, payload: str | dict) -> dict:
         data = json.loads(payload) if isinstance(payload, str) else payload
         base_url = str(data.get("base_url", "")).strip()
         profile_id = str(data.get("profile_id", "")).strip()
         protocol = str(data.get("protocol", "openai-chat"))
         if protocol not in SUPPORTED_PROTOCOLS:
-            raise ValueError("不支持的接口协议。")
+            raise ValueError(msg("error.protocol"))
         key = str(data.get("api_key", "")).strip()
         if not key and profile_id:
             existing = next((p for p in self.settings.model_profiles if p.id == profile_id), None)
@@ -143,9 +188,11 @@ class DesktopApi:
                 key = load_model_api_key(profile_id)
         model = str(data.get("model", "")).strip()
         if not key or not model:
-            raise ValueError("请填写 API Key 和模型名称后再测试。")
+            raise ValueError(msg("error.testFields"))
         return {"message": test_connection(base_url, key, model, protocol=protocol)}
 
+    @bridge_errors
+    @settings_lock
     def save_settings(self, payload: str | dict) -> dict:
         data = json.loads(payload) if isinstance(payload, str) else payload
         if "jev_api_key" in data:
@@ -159,20 +206,20 @@ class DesktopApi:
         for item in data.get("profiles", []):
             profile_id = str(item.get("id") or uuid.uuid4()).strip()
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", profile_id):
-                raise ValueError("模型配置标识格式不正确。")
+                raise ValueError(msg("error.profileId"))
             if profile_id in seen:
-                raise ValueError("模型配置标识重复。")
+                raise ValueError(msg("error.duplicateId"))
             seen.add(profile_id)
             base_url = str(item.get("base_url", "")).strip()
             model = str(item.get("model", "")).strip()
             if not base_url or not model:
-                raise ValueError("每个模型配置都需要接口地址和模型名称。")
+                raise ValueError(msg("error.profileFields"))
             protocol = str(item.get("protocol", "openai-chat"))
             if protocol not in SUPPORTED_PROTOCOLS:
-                raise ValueError("每个模型配置都需要选择有效的接口协议。")
+                raise ValueError(msg("error.profileProtocol"))
             max_tokens = int(item["max_tokens"]) if item.get("max_tokens") else None
             if max_tokens is not None and not 1 <= max_tokens <= 131072:
-                raise ValueError("输出长度必须在 1 到 131072 tokens 之间。")
+                raise ValueError(msg("error.tokens"))
             profiles.append(ModelProfile(
                 id=profile_id,
                 name=str(item.get("name") or model).strip()[:80],
@@ -208,12 +255,13 @@ class DesktopApi:
         self.settings.save()
         return self.get_state()
 
+    @bridge_errors
     def start_calibration(self) -> dict:
         try:
             client = virtual_screen_rect()
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-        self._set_progress(phase="calibrating", status="请拖动框选桌面聊天消息区域")
+            raise
+        self._set_progress(phase="calibrating", status=msg("status.calibrating"))
 
         def overlay() -> None:
             # hide/show must not run on the main thread while a js_api call is
@@ -224,7 +272,7 @@ class DesktopApi:
             try:
                 root = tk.Tk()
             except Exception as exc:
-                self._set_progress(phase="error", status=f"无法启动框选窗口：{exc}")
+                self._set_progress(phase="error", status=msg("status.overlayFailed", detail=exc))
                 if self.window:
                     self.window.show()
                     self.window.restore()
@@ -235,20 +283,21 @@ class DesktopApi:
             root.geometry(overlay_geometry(client))
             canvas = tk.Canvas(root, bg="#111827", highlightthickness=0, cursor="crosshair")
             canvas.pack(fill="both", expand=True)
-            canvas.create_text(client.width // 2, 28, text="拖动框选聊天消息区域 · Esc 取消", fill="white", font=("Microsoft YaHei UI", 14, "bold"))
+            canvas.create_text(client.width // 2, 28, text=translate("capture.overlay", self.resolved_language), fill="white", font=("Microsoft YaHei UI", 14, "bold"))
             start: list[tuple[int, int] | None] = [None]
             shape: list[int | None] = [None]
 
             def finish(rect: Rect | None) -> None:
                 if rect and rect.width >= 200 and rect.height >= 100:
-                    self.settings.chat_rect = rect
-                    self.settings.chat_rect_mode = "screen"
-                    self.settings.save()
-                    self._set_progress(status="聊天区已保存，可以开始分析", phase="idle")
+                    with self._lock:
+                        self.settings.chat_rect = rect
+                        self.settings.chat_rect_mode = "screen"
+                        self.settings.save()
+                    self._set_progress(status=msg("status.areaSaved"), phase="idle")
                 elif rect:
-                    self._set_progress(status="框选区域太小，请重新框选聊天消息区域。", phase="idle")
+                    self._set_progress(status=msg("status.areaSmall"), phase="idle")
                 else:
-                    self._set_progress(status="已取消框选", phase="idle")
+                    self._set_progress(status=msg("status.cancelled"), phase="idle")
                 root.destroy()
                 if self.window:
                     self.window.show()
@@ -282,29 +331,29 @@ class DesktopApi:
         threading.Thread(target=overlay, daemon=True).start()
         return {"ok": True}
 
+    @bridge_errors
     def analyze(self) -> dict:
         with self._lock:
             if self._state["phase"] not in {"idle", "error"}:
-                return {"ok": False, "error": "分析正在进行中。"}
+                return {"ok": False, "error": msg("error.busy")}
         if not self.settings.chat_rect:
-            return {"ok": False, "error": "请先框选聊天消息区域。"}
+            return {"ok": False, "error": msg("error.selectFirst")}
         if self.settings.chat_rect_mode == "wechat-client":
-            return {"ok": False, "error": "旧版微信框选坐标已失效，请重新框选一次桌面对话区域。"}
+            return {"ok": False, "error": msg("error.legacyArea")}
         jev_key = load_api_key()
         if not jev_key:
-            return {"ok": False, "error": "请先在设置中保存 Jev / TypeSafe API 密钥。"}
+            return {"ok": False, "error": msg("error.jevKey")}
         selected_profile = next((p for p in self.settings.model_profiles if p.id == self.settings.active_model_id), None)
         profile_key = load_model_api_key(selected_profile.id) if selected_profile else ""
         profile = selected_profile if selected_profile and profile_key else None
 
         with self._lock:
             if self._state["phase"] not in {"idle", "error"}:
-                return {"ok": False, "error": "分析正在进行中。"}
-            self._state.update(
-                phase="capturing", status="正在截取对话…助手窗口会短暂隐藏",
+                return {"ok": False, "error": msg("error.busy")}
+            self._set_progress(
+                phase="capturing", status=msg("status.capturing"),
                 error="", analysis=None, suggestions=[],
             )
-            self._state_revision += 1
 
         def worker() -> None:
             try:
@@ -325,39 +374,39 @@ class DesktopApi:
                                 window_title_at(area.left + area.width // 2, area.top + area.height // 2),
                             ),
                         )
-                        self._set_progress(phase="recognizing", status="截图完成，正在本机识别文字…")
+                        self._set_progress(phase="recognizing", status=msg("status.recognizing"))
                         return frame
 
                     snapshot = capture_desktop_chat(self.settings.chat_rect, capture_frame)
                 assert_safe_chat(snapshot.raw_text)
                 if self.settings.allowed_titles and not any(title in snapshot.title for title in self.settings.allowed_titles):
-                    raise RuntimeError(f"当前会话“{snapshot.title}”不在白名单中。")
+                    raise RuntimeError(msg("error.allowlist", name=snapshot.title))
                 self._set_progress(
-                    phase="judging", status=f"已识别 {len(snapshot.messages)} 条消息，正在调用 Jev 判断…",
+                    phase="judging", status=msg("status.judging", count=len(snapshot.messages)),
                     preview=[{"side": m.side, "text": m.text} for m in snapshot.messages[-8:]],
                 )
                 analysis = judge(snapshot, self.settings.relationship, jev_key)
-                self._set_progress(phase="generating" if profile else "idle", status="Jev 判断完成，正在生成建议回复…" if profile else "Jev 判断完成", analysis=_analysis_data(analysis))
+                self._set_progress(phase="generating" if profile else "idle", status=msg("status.generating") if profile else msg("status.judged"), analysis=_analysis_data(analysis))
                 if profile:
                     replies = generate_suggestions(
                         snapshot, self.settings.relationship, analysis, profile_key,
                         profile.model, profile.base_url, profile.max_tokens, profile.protocol,
                     )
-                    self._set_progress(phase="ranking", status="Jev 正在评估候选回复的推荐度…")
+                    self._set_progress(phase="ranking", status=msg("status.ranking"))
                     try:
                         suggestions = recommend_replies(
                             snapshot, self.settings.relationship, replies, jev_key
                         )
-                        status = "Jev 判断、建议回复和推荐度评估已完成"
+                        status = msg("status.complete")
                     except Exception as rank_error:
                         suggestions = [
                             {"text": reply, "probability": None, "confidence": None, "recommended": False}
                             for reply in replies
                         ]
-                        status = f"回复已生成；Jev 推荐度暂不可用：{rank_error}"
+                        status = msg("status.rankFailed", detail=rank_error)
                     self._set_progress(phase="idle", status=status, suggestions=suggestions)
             except Exception as exc:
-                self._set_progress(phase="error", status=str(exc), error=str(exc))
+                self._set_progress(phase="error", status=exc, error=exc)
 
         threading.Thread(target=worker, daemon=True).start()
         return {"ok": True}
@@ -367,13 +416,16 @@ class DesktopApi:
             self.window.on_top = bool(value)
         return {"ok": True}
 
+    @bridge_errors
+    @settings_lock
     def set_active_model(self, profile_id: str) -> dict:
         if profile_id and profile_id not in {profile.id for profile in self.settings.model_profiles}:
-            raise ValueError("所选模型配置不存在。")
+            raise ValueError(msg("error.profileMissing"))
         self.settings.active_model_id = profile_id
         self.settings.save()
         return {"ok": True}
 
+    @bridge_errors
     def copy_text(self, value: str) -> dict:
         import win32clipboard
 
@@ -386,6 +438,16 @@ class DesktopApi:
         return {"ok": True}
 
 
+def show_startup_error(locale: str, detail: str) -> None:
+    root = tk.Tk()
+    root.title(translate("error.startup", locale))
+    root.attributes("-topmost", True)
+    tk.Label(root, text=detail, wraplength=520, justify="left", padx=24, pady=20).pack()
+    tk.Button(root, text=translate("common.close", locale), command=root.destroy, padx=20).pack(pady=(0, 20))
+    root.bind("<Escape>", lambda _: root.destroy())
+    root.mainloop()
+
+
 def main() -> None:
     ensure_dpi_awareness()
     api = DesktopApi()
@@ -394,9 +456,10 @@ def main() -> None:
     else:
         frontend = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
     if not frontend.exists():
-        raise RuntimeError("未找到 Vue 前端资源，请在 windows/frontend 运行 npm run build。")
+        show_startup_error(api.resolved_language, translate("error.frontend", api.resolved_language))
+        return
     window = webview.create_window(
-        f"Jev 对话助手 · Windows v{__version__}",
+        translate("app.title", api.resolved_language, version=__version__),
         frontend.as_uri(),
         js_api=api,
         width=980,
@@ -409,16 +472,7 @@ def main() -> None:
     try:
         webview.start(gui="edgechromium", debug=False)
     except Exception as exc:
-        root = tk.Tk()
-        root.withdraw()
-        from tkinter import messagebox
-
-        messagebox.showerror(
-            "无法启动桌面界面",
-            f"请确认已安装 Microsoft Edge WebView2 Runtime。\n\n{exc}",
-            parent=root,
-        )
-        root.destroy()
+        show_startup_error(api.resolved_language, translate("error.webview", api.resolved_language, detail=str(exc)))
 
 
 if __name__ == "__main__":

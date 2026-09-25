@@ -1,6 +1,8 @@
 # Jev 对话助手（Windows PC 版）
 
-**版本：v1.1.0**
+[简体中文](README.md) | [English](docs/README.en.md) | [Français](docs/README.fr.md) | [Русский](docs/README.ru.md) | [日本語](docs/README.ja.md)
+
+**版本：v1.1.1**
 
 本项目是基于开源项目https://github.com/Liyucheng1997/332_lab-jev-chat 的判断题库与分析流程进行的 Windows PC 端再开发。
 
@@ -23,6 +25,12 @@ powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 ```
 
 首次使用时，在设置页填写 Jev API Key。需要生成候选回复时，再添加回复模型配置、API Key 和模型名称。
+
+## 界面语言
+
+支持简体中文、English、Français、Русский、日本語。在设置页选择“界面语言”后立即保存并切换，无需重启，也不会提交其他未保存的设置。新用户默认跟随 Windows 界面语言，不支持的系统语言回退英语；旧版用户升级后保持简体中文。
+
+本次多语言仅覆盖界面、提示和分析结果标签。聊天原文、用户填写的关系说明和候选回复保持原内容；OCR 与中文回复生成能力沿用现有版本。
 
 ## 使用
 

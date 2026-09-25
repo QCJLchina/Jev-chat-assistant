@@ -34,6 +34,7 @@ class ModelProfile:
 
 @dataclass
 class AppConfig:
+    language: str = "system"
     relationship: str = "对方是我的朋友；from=me 是我发的，from=other 是对方发的"
     deepseek_model: str = "deepseek-flash"
     chat_rect: Rect | None = None
@@ -53,6 +54,9 @@ class AppConfig:
             return cls()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            from .i18n import LANGUAGES
+            if not isinstance(raw.get("language"), str) or raw["language"] not in LANGUAGES:
+                raw["language"] = "zh-CN"
             legacy_model_config = "model_profiles" not in raw
             rect = raw.get("chat_rect")
             raw["chat_rect"] = Rect(**rect) if rect else None

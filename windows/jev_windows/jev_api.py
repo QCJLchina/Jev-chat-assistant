@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .i18n import msg
+
 import json
 import socket
 import time
@@ -43,18 +45,18 @@ def _post(key: str, body: dict, timeout: float = 20) -> dict:
                 time.sleep(1)
                 continue
             readable = {
-                401: "Jev / TypeSafe API 密钥无效（401）",
-                403: "当前 Jev API 密钥没有访问权限（403）",
-                422: f"Jev 请求格式被拒绝（422）：{body_text}",
-                429: "Jev 请求过于频繁（429）",
-            }.get(status, f"Jev API 请求失败（HTTP {status}）：{body_text}")
+                401: msg("error.jev401"),
+                403: msg("error.jev403"),
+                422: msg("error.jev422", detail=body_text),
+                429: msg("error.jev429"),
+            }.get(status, msg("error.jevHttp", status=status, detail=body_text))
             raise JevApiError(readable) from None
         except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
             last_error = exc
             if attempt == 0:
                 time.sleep(1)
                 continue
-    raise JevApiError(f"无法连接 Jev API：{last_error}")
+    raise JevApiError(msg("error.jevConnect", detail=str(last_error)))
 
 
 def _state(snapshot: ChatSnapshot, relationship: str) -> dict:

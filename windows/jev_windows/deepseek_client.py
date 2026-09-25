@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .i18n import msg
+
 import json
 import re
 import socket
@@ -26,11 +28,11 @@ def _endpoint(base_url: str, endpoint: str, protocol: str = DEFAULT_PROTOCOL) ->
     value = (base_url or DEFAULT_API_BASE_URL).strip().rstrip("/")
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme not in {"https", "http"} or not parsed.netloc:
-        raise DeepSeekError("接口地址必须是有效的 HTTP 或 HTTPS URL。")
+        raise DeepSeekError(msg("error.url"))
     if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise DeepSeekError("非本机接口请使用 HTTPS。")
+        raise DeepSeekError(msg("error.https"))
     if protocol not in SUPPORTED_PROTOCOLS:
-        raise DeepSeekError("不支持的接口协议。")
+        raise DeepSeekError(msg("error.protocol"))
     path = parsed.path.rstrip("/")
     suffixes = {"/models", "/chat/completions", "/responses", "/messages"}
     for suffix in suffixes:
@@ -88,18 +90,18 @@ def _request_json(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:240]
         if exc.code in {404, 405} and path == "models":
-            raise DeepSeekError("此接口未提供模型列表，请手动填写模型名称。") from None
+            raise DeepSeekError(msg("error.noModelsEndpoint")) from None
         message = {
-            401: "模型 API 密钥无效（401）",
-            403: "模型 API 密钥没有访问权限（403）",
-            402: "模型 API 余额不足（402）",
-            429: "模型 API 请求过于频繁（429）",
-        }.get(exc.code, f"模型 API 请求失败（HTTP {exc.code}）：{detail}")
+            401: msg("error.model401"),
+            403: msg("error.model403"),
+            402: msg("error.model402"),
+            429: msg("error.model429"),
+        }.get(exc.code, msg("error.modelHttp", status=exc.code, detail=detail))
         raise DeepSeekError(message) from None
     except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
-        raise DeepSeekError(f"连接模型服务失败：{exc}") from None
+        raise DeepSeekError(msg("error.modelConnect", detail=str(exc))) from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise DeepSeekError("模型服务返回了无法识别的数据。") from exc
+        raise DeepSeekError(msg("error.modelData")) from exc
 
 
 def _post(
@@ -125,7 +127,7 @@ def list_models(base_url: str, key: str = "", timeout: float = 12, protocol: str
         data = payload["data"]
         models = sorted({str(item["id"]).strip() for item in data if item.get("id")})
     except (KeyError, TypeError, AttributeError) as exc:
-        raise DeepSeekError("模型列表格式不符合所选协议。") from exc
+        raise DeepSeekError(msg("error.modelListFormat")) from exc
 
     if protocol == "anthropic" and payload.get("has_more") and models:
         after_id = str(payload.get("last_id") or models[-1])
@@ -134,14 +136,14 @@ def list_models(base_url: str, key: str = "", timeout: float = 12, protocol: str
             try:
                 page_models = [str(item["id"]).strip() for item in page["data"] if item.get("id")]
             except (KeyError, TypeError, AttributeError) as exc:
-                raise DeepSeekError("Anthropic 模型列表分页格式错误。") from exc
+                raise DeepSeekError(msg("error.modelPagination")) from exc
             models.extend(page_models)
             if not page.get("has_more") or not page_models:
                 break
             after_id = str(page.get("last_id") or page_models[-1])
     models = sorted(set(models))
     if not models:
-        raise DeepSeekError("接口没有返回可选模型，请手动填写模型名称。")
+        raise DeepSeekError(msg("error.emptyModels"))
     return models
 
 
@@ -196,9 +198,9 @@ def test_connection(base_url: str, key: str, model: str, protocol: str = DEFAULT
     body = _message_body(protocol, model, "Reply with OK.", "Reply with OK.", 16)
     response = _call_model(base_url, key, protocol, body, 15)
     try:
-        return _response_text(response, protocol).strip()[:100] or "连接成功"
+        return _response_text(response, protocol).strip()[:100] or msg("model.success")
     except (KeyError, IndexError, TypeError, AttributeError):
-        raise DeepSeekError("模型接口已响应，但返回内容格式不正确。") from None
+        raise DeepSeekError(msg("error.modelResponse")) from None
 
 
 def _parse_suggestions(content: str) -> list[str]:
@@ -221,7 +223,7 @@ def generate_suggestions(
     protocol: str = DEFAULT_PROTOCOL,
 ) -> list[str]:
     if protocol not in SUPPORTED_PROTOCOLS:
-        raise DeepSeekError("不支持的接口协议。")
+        raise DeepSeekError(msg("error.protocol"))
     transcript = "\n".join(f"{'我' if message.side == 'me' else '对方'}：{message.text}" for message in snapshot.messages)
     judgment = {
         "true_intent": analysis.true_intent,
@@ -242,7 +244,7 @@ def generate_suggestions(
     try:
         replies = _parse_suggestions(_response_text(response, protocol))
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise DeepSeekError("模型没有返回有效的建议回复。") from exc
+        raise DeepSeekError(msg("error.repliesInvalid")) from exc
     if len(replies) != 3:
-        raise DeepSeekError("模型返回的建议回复不是三条。")
+        raise DeepSeekError(msg("error.repliesCount"))
     return replies
