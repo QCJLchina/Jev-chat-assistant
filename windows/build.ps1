@@ -52,9 +52,21 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller 构建失败（退出码 $LASTEXITCODE）。请先关闭正在运行的 Jev对话助手.exe 后重试。"
     }
+
+    & $PythonExe -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --name "update_helper" `
+        --paths $ProjectRoot `
+        --distpath (Join-Path $ProjectRoot "dist\Jev对话助手") `
+        (Join-Path $PSScriptRoot "update_helper.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "update_helper.exe 构建失败（退出码 $LASTEXITCODE）。"
+    }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "构建完成：dist\Jev对话助手\Jev对话助手.exe"
+Write-Host "构建完成：dist\Jev对话助手\Jev对话助手.exe（含 update_helper.exe）"

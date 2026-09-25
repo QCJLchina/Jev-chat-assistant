@@ -5,8 +5,8 @@ import type { BridgeResult, Language, Locale, Message } from './i18n'
 import { version as appVersion } from '../package.json'
 import {
   ArrowLeft, ArrowRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight,
-  CircleHelp, Copy, Cpu, Eye, EyeOff, KeyRound, LoaderCircle,
-  LockKeyhole, MessageCircle, Plus, RefreshCw, Save,
+  CircleHelp, Copy, Cpu, Download, Eye, EyeOff, KeyRound, LoaderCircle,
+  LockKeyhole, MessageCircle, Plus, RefreshCw, RotateCw, Save,
   Settings2, ShieldCheck, Sparkles, Trash2, X,
 } from '@lucide/vue'
 
@@ -21,8 +21,13 @@ type UiState = {
   analysis: Record<string, any> | null; suggestions: Suggestion[]; error: string
   version: string; chat_rect: Record<string, number> | null; chat_rect_mode: string; jev_key_configured: boolean
   relationship: string; allowed_titles: string[]; profiles: Profile[]; active_model_id: string
+  update_info?: UpdateInfo | null
 }
-type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message'>>
+type UpdateInfo = {
+  update_available: boolean; latest_version: string; current_version: string;
+  download_url: string; size: number; sha256?: string
+}
+type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info'>>
 type Bridge = {
   set_language(language: Language): Promise<BridgeResult & { language: Language; resolved_language: Locale }>
   get_state(): Promise<UiState>
@@ -35,6 +40,10 @@ type Bridge = {
   set_on_top(value: boolean): Promise<{ ok: boolean }>
   set_active_model(profileId: string): Promise<BridgeResult>
   copy_text(value: string): Promise<BridgeResult>
+  check_for_updates(): Promise<BridgeResult & UpdateInfo>
+  download_update(): Promise<BridgeResult>
+  cancel_update(): Promise<BridgeResult>
+  apply_update(): Promise<BridgeResult>
 }
 declare global { interface Window { pywebview?: { api: Bridge } } }
 
@@ -78,6 +87,50 @@ const jevKey = ref('')
 const jevKeyVisible = ref(false)
 const clearJevKey = ref(false)
 
+const updateInfo = ref<UpdateInfo | null>(null)
+const updateChecking = ref(false)
+const updateBusy = ref(false)
+const updateProgress = ref(-1)
+
+const updatePhase = computed(() => state.phase)
+const updateReady = computed(() => updatePhase.value === 'updateReady')
+const updateRunning = computed(() => updatePhase.value === 'updating')
+const updatePercent = computed(() => (updateRunning.value && updateProgress.value >= 0 ? updateProgress.value : null))
+const updateStatusText = computed(() => display(state.status_message ?? state.status))
+
+async function checkForUpdates(manual = true) {
+  if (updateChecking.value) return
+  updateChecking.value = true
+  try {
+    const result = await bridge()!.check_for_updates()
+    updateInfo.value = result
+    if (manual) notify(result.update_available ? m('update.available', { version: result.latest_version }) : m('update.latest'))
+  } catch (error) {
+    if (manual) notify(errorMessage(error), true)
+  } finally { updateChecking.value = false }
+}
+async function startUpdateDownload() {
+  if (updateBusy.value || updateRunning.value) return
+  updateBusy.value = true
+  updateProgress.value = 0
+  trackingState = true
+  try {
+    await bridge()!.download_update()
+  } catch (error) {
+    trackingState = false
+    notify(errorMessage(error), true)
+  } finally { updateBusy.value = false }
+}
+async function cancelUpdateDownload() {
+  try { await bridge()!.cancel_update() } catch { /* state will settle */ }
+}
+async function applyUpdateNow() {
+  if (updateBusy.value) return
+  updateBusy.value = true
+  try { await bridge()!.apply_update() } catch (error) { notify(errorMessage(error), true) }
+  finally { updateBusy.value = false }
+}
+
 const activeProfile = computed(() => state.profiles.find(p => p.id === state.active_model_id))
 const statusTone = computed(() => state.phase === 'error' ? 'danger' : state.phase === 'idle' ? 'neutral' : 'working')
 const endpointSuffixes: Record<string, string> = { 'openai-chat': '/chat/completions', 'openai-responses': '/responses', anthropic: '/messages' }
@@ -111,6 +164,7 @@ function applyState(next: UiState) {
   Object.assign(state, next)
   state.status_message = next.status_message
   state.error_message = next.error_message
+  if (next.update_info) updateInfo.value = next.update_info
   locale.value = next.resolved_language ?? 'zh-CN'
   if (trackingState && next.revision !== previousRevision && (next.phase === 'idle' || next.phase === 'error')) {
     trackingState = false
@@ -134,7 +188,14 @@ async function pollProgress() {
       Object.assign(state, changes)
       if ('status' in changes) state.status_message = changes.status_message
       if ('error' in changes) state.error_message = changes.error_message
-      if (state.phase === 'idle' || state.phase === 'error') trackingState = false
+      if (changes.update_info) updateInfo.value = changes.update_info
+      if (typeof changes.status === 'string') {
+        const match = /(\d{1,3})%/.exec(changes.status)
+        if (match) updateProgress.value = Number(match[1])
+        else if (state.phase !== 'updating') updateProgress.value = -1
+      }
+      if (state.phase === 'idle' || state.phase === 'error') { trackingState = false; updateProgress.value = -1 }
+      if (state.phase === 'updateReady') { trackingState = false; updateProgress.value = 100 }
     }
   } catch { /* Retry after the window reappears from capture. */ }
   finally { polling = false }
@@ -359,6 +420,7 @@ onMounted(() => {
   if (bridge()) void loadState()
   else window.addEventListener('pywebviewready', loadState, { once: true })
   pollTimer = window.setInterval(() => { void pollProgress() }, 850)
+  window.setTimeout(() => { if (updateInfo.value === null) void checkForUpdates(false) }, 4000)
 })
 onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState); window.clearInterval(pollTimer); window.clearTimeout(toastTimer); window.clearTimeout(addressTimer); window.clearTimeout(keyTimer) })
 </script>
@@ -377,6 +439,9 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
     </header>
 
     <template v-if="page === 'home'">
+      <button v-if="updateInfo?.update_available" class="update-banner" @click="page = 'settings'">
+        <Download :size="16" /><span>{{ t('update.banner', { version: updateInfo.latest_version }) }}</span><ArrowRight :size="15" />
+      </button>
       <section class="welcome-row">
         <div><div class="eyebrow">{{ t('home.eyebrow') }} <span class="version-pill">v{{ state.version }}</span></div><h1>{{ t('home.title') }}</h1><p>{{ t('home.subtitle') }}</p></div>
         <div class="jev-badge"><ShieldCheck :size="18" /><span>{{ t('home.safety') }}</span></div>
@@ -460,6 +525,28 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
             <label class="field-label spaced" for="allowed-titles">{{ t('settings.allowlist') }}</label><input id="allowed-titles" class="plain-input" :value="state.allowed_titles.join('，')" :placeholder="t('settings.allowlistHint')" @input="state.allowed_titles = ($event.target as HTMLInputElement).value.replaceAll(',', '，').split('，').map(item => item.trim()).filter(Boolean)" />
             <div class="field-hint">{{ t('settings.allowlistHelp') }}</div>
           </section>
+
+          <section class="surface settings-panel update-panel">
+            <div class="panel-heading"><div class="heading-icon green"><RotateCw :size="17" /></div><div><h2>{{ t('update.title') }}</h2><p>{{ t('update.help') }}</p></div><span class="count-pill">v{{ state.version }}</span></div>
+            <div class="update-row">
+              <span class="update-status">{{ updateStatusText || t('update.idleHint') }}</span>
+              <div class="update-actions">
+                <button v-if="!updateReady && !updateRunning" class="button button-outline" :disabled="updateChecking || updateRunning" @click="checkForUpdates()">
+                  <LoaderCircle v-if="updateChecking" :size="15" class="spin" /><RefreshCw v-else :size="15" />{{ t('update.check') }}
+                </button>
+                <button v-if="updateReady" class="button button-primary" :disabled="updateBusy" @click="applyUpdateNow">
+                  <LoaderCircle v-if="updateBusy" :size="15" class="spin" /><RotateCw v-else :size="15" />{{ t('update.applyRestart') }}
+                </button>
+                <button v-if="updateRunning" class="button button-outline" :disabled="updateBusy" @click="cancelUpdateDownload"><X :size="15" />{{ t('update.cancel') }}</button>
+              </div>
+            </div>
+            <div v-if="updatePercent !== null" class="update-progress"><div class="update-progress-fill" :style="{ width: updatePercent + '%' }"></div></div>
+            <div v-if="updateInfo?.update_available && !updateRunning && !updateReady" class="update-available-row">
+              <span>{{ t('update.availableLong', { version: updateInfo.latest_version }) }}</span>
+              <button class="button button-primary" :disabled="updateBusy" @click="startUpdateDownload"><Download :size="15" />{{ t('update.download') }}</button>
+            </div>
+            <p class="field-hint">{{ t('update.privacyNote') }}</p>
+          </section>
           <div class="save-bar"><span><LockKeyhole :size="14" />{{ t('settings.storage') }}</span><button class="button button-primary" :disabled="busy || languageBusy" @click="saveSettings"><LoaderCircle v-if="busy" :size="16" class="spin" /><Save v-else :size="16" />{{ busy ? t('settings.saving') : t('settings.save') }}</button></div>
         </div>
       </div>
@@ -508,6 +595,15 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 </template>
 
 <style>
+.update-banner{display:flex;align-items:center;gap:10px;width:100%;margin-bottom:14px;padding:10px 16px;border:1px solid #bcd9ef;border-radius:12px;background:linear-gradient(90deg,#eaf6ff,#f6fbff);color:#1f6fa8;font-size:13px;font-weight:600;cursor:pointer;text-align:left}
+.update-banner:hover{background:#e0f1fd}
+.update-panel .update-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px}
+.update-panel .update-status{font-size:13px;color:#45596f}
+.update-panel .update-actions{display:flex;gap:8px;flex-shrink:0}
+.update-progress{height:6px;border-radius:999px;background:#e6edf4;overflow:hidden;margin-top:10px}
+.update-progress-fill{height:100%;border-radius:999px;background:#2f8fd0;transition:width .3s ease}
+.update-available-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:13px;color:#1f6fa8;font-weight:600}
+.heading-icon.green{background:#e5f6ec;color:#1f9d55}
 .model-name-wrap{position:relative}
 .model-name-wrap .plain-input{width:100%;padding-right:42px}
 .model-name-wrap .field-icon-button{position:absolute;right:6px;top:50%;transform:translateY(-50%)}

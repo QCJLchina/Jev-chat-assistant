@@ -47,7 +47,13 @@ The program never reads chat databases, touches chat input boxes, or sends messa
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-Build output: `dist\Jev对话助手\Jev对话助手.exe`. Keep the `_internal` folder next to it when distributing; the target computer also needs the Microsoft Edge WebView2 Runtime.
+Build output: `dist\Jev对话助手\Jev对话助手.exe`. PyInstaller bundles the Vue assets, OCR models, and Python runtime, and also builds the update helper `update_helper.exe` (ship it next to the main executable). Keep the `_internal` folder next to it when distributing; the target computer also needs the Microsoft Edge WebView2 Runtime.
+
+## In-app updates
+
+The app can fetch updates on its own. A few seconds after launch it silently checks GitHub Releases; when a new version exists, a banner appears at the top of the home page, and you can also check manually under "Version & updates" in settings. The check only queries `api.github.com` for the latest version number — no chat content is ever sent.
+
+Once you confirm, the app downloads the release archive in the background (with progress and cancel support), verifies its SHA256 (enabled when the release ships a `SHA256SUMS.txt`; otherwise falls back to a size check) and extracts it to a staging folder. Clicking "Restart & install update" exits the main program; the helper `update_helper.exe` atomically swaps the install directory and restarts the new version. If any step fails, it rolls back to the old version. Settings and data live in `%APPDATA%` and are unaffected by updates.
 
 ## Privacy
 

@@ -47,7 +47,13 @@ powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-ビルド成果物: `dist\Jev对话助手\Jev对话助手.exe`。配布時は隣接する `_internal` フォルダを必ず一緒にしてください。対象 PC にも Microsoft Edge WebView2 Runtime が必要です。
+ビルド成果物: `dist\Jev对话助手\Jev对话助手.exe`。PyInstaller が Vue アセット・OCR モデル・Python ランタイムをまとめてパッケージ化し、アップデート用ヘルパー `update_helper.exe` も生成します（本体の exe と同じ場所に同梱してください）。配布時は隣接する `_internal` フォルダを必ず一緒にしてください。対象 PC にも Microsoft Edge WebView2 Runtime が必要です。
+
+## アプリ内アップデート
+
+アプリは自らアップデートを取得できます。起動から数秒後に GitHub Releases を静かに確認し、新バージョンがあればホーム画面の上部にバナーを表示します。設定ページの「バージョンとアップデート」から手動で確認することもできます。確認時は `api.github.com` に最新バージョン番号を問い合わせるだけで、チャット内容が送信されることはありません。
+
+アップデートを確定すると、アプリはバックグラウンドでリリースアーカイブをダウンロードし（進捗表示・キャンセル対応）、SHA256 を検証（リリースに `SHA256SUMS.txt` がある場合に有効。無い場合はサイズ検査にフォールバック）して一時フォルダに展開します。「再起動してインストール」をクリックするとメインプログラムが終了し、ヘルパー `update_helper.exe` がインストール先を差し替えて新バージョンを再起動します。途中で失敗した場合は旧バージョンへロールバックされます。設定やデータは `%APPDATA%` に保存されており、アップデートの影響を受けません。
 
 ## プライバシー
 

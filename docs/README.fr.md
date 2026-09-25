@@ -47,7 +47,13 @@ Le programme ne lit jamais les bases de données de conversation, ne manipule pa
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-Résultat : `dist\Jev对话助手\Jev对话助手.exe`. Conservez le dossier `_internal` voisin lors de la distribution ; l'ordinateur cible doit aussi disposer de Microsoft Edge WebView2 Runtime.
+Résultat : `dist\Jev对话助手\Jev对话助手.exe`. PyInstaller regroupe les ressources Vue, les modèles OCR et le runtime Python, et produit également l'assistant de mise à jour `update_helper.exe` (à distribuer à côté de l'exécutable principal). Conservez le dossier `_internal` voisin lors de la distribution ; l'ordinateur cible doit aussi disposer de Microsoft Edge WebView2 Runtime.
+
+## Mises à jour intégrées
+
+L'application peut récupérer ses mises à jour elle-même. Quelques secondes après le lancement, elle vérifie silencieusement les GitHub Releases ; lorsqu'une nouvelle version existe, une bannière apparaît en haut de la page d'accueil, et vous pouvez aussi vérifier manuellement dans « Version et mises à jour » des paramètres. Cette vérification interroge uniquement `api.github.com` pour connaître le numéro de la dernière version — aucun contenu de conversation n'est envoyé.
+
+Après confirmation, l'application télécharge l'archive en arrière-plan (avec progression et annulation), vérifie son SHA256 (activé lorsque la publication inclut un `SHA256SUMS.txt` ; sinon repli sur un contrôle de taille) et l'extrait dans un dossier temporaire. En cliquant sur « Redémarrer et installer », le programme principal se ferme ; l'assistant `update_helper.exe` remplace atomiquement le répertoire d'installation et redémarre la nouvelle version. En cas d'échec, un retour à l'ancienne version est effectué. Les réglages et données sont dans `%APPDATA%` et ne sont pas affectés par la mise à jour.
 
 ## Confidentialité
 

@@ -8,6 +8,7 @@ from dataclasses import replace
 from .i18n import LANGUAGES, bridge_errors, describe, render, resolve_language, settings_lock, translate
 import re
 import sys
+import tempfile
 import threading
 import tkinter as tk
 import uuid
@@ -31,6 +32,16 @@ from .deepseek_client import SUPPORTED_PROTOCOLS, DeepSeekError, generate_sugges
 from .jev_api import judge, recommend_replies
 from .models import Analysis, Rect
 from .safety import assert_safe_chat
+from .updater import (
+    UpdateError,
+    app_install_dir,
+    apply_staged_update,
+    compare_versions,
+    download_release,
+    fetch_latest_release,
+    stage_update,
+    verify_sha256,
+)
 from .windows_api import (
     ensure_dpi_awareness,
     find_wechat_window,
@@ -85,6 +96,9 @@ class DesktopApi:
         self._state["status_message"] = describe(self._state["status"])
         self._state["error_message"] = None
         self._state_revision = 0
+        self.update_info: dict | None = None
+        self.update_cancel = threading.Event()
+        self.update_thread: threading.Thread | None = None
 
     def _set_progress(self, **updates: object) -> None:
         with self._lock:
@@ -437,6 +451,93 @@ class DesktopApi:
             win32clipboard.CloseClipboard()
         return {"ok": True}
 
+    # ------------------------------------------------------------------
+    # In-app update bridge
+    # ------------------------------------------------------------------
+
+    @bridge_errors
+    def check_for_updates(self) -> dict:
+        release = fetch_latest_release()
+        info = {
+            "update_available": compare_versions(__version__, release["version"]) < 0,
+            "latest_version": release["version"],
+            "current_version": __version__,
+            "download_url": release["download_url"],
+            "size": release["size"],
+            "sha256": release["sha256"],
+        }
+        self.update_info = info
+        with self._lock:
+            self._state["update_info"] = info
+            self._state_revision += 1
+        return info
+
+    def start_background_check(self) -> None:
+        """Silent update check shortly after startup; never blocks or errors UI."""
+
+        def worker() -> None:
+            threading.Event().wait(3.0)
+            try:
+                self.check_for_updates()
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @bridge_errors
+    def download_update(self) -> dict:
+        if self.update_thread and self.update_thread.is_alive():
+            raise ValueError(msg("update.inProgress"))
+        info = self.update_info or self._state.get("update_info")
+        if not info or not info.get("download_url"):
+            raise ValueError(msg("update.notChecked"))
+        self.update_cancel = threading.Event()
+        self._set_progress(phase="updating", status=msg("update.downloading"), error=None)
+
+        def worker() -> None:
+            temp_zip = Path(tempfile.gettempdir()) / f"jevchat-update-{info['latest_version']}.zip"
+            try:
+                def progress(percent: int) -> None:
+                    self._set_progress(status=msg("update.downloading", percent=percent))
+
+                download_release(
+                    info["download_url"], temp_zip, expected_size=info.get("size", 0),
+                    progress_cb=progress, cancel_event=self.update_cancel,
+                )
+                if info.get("sha256"):
+                    self._set_progress(status=msg("update.verifying"))
+                    if not verify_sha256(temp_zip, info["sha256"]):
+                        temp_zip.unlink(missing_ok=True)
+                        raise UpdateError("update.checksumMismatch")
+                self._set_progress(status=msg("update.staging"))
+                stage_update(temp_zip)
+                temp_zip.unlink(missing_ok=True)
+                self._set_progress(status=msg("update.ready"), phase="updateReady")
+            except Exception as exc:
+                temp_zip.unlink(missing_ok=True)
+                if isinstance(exc, UpdateError) and str(exc.args[0]) == "update.cancelled":
+                    self._set_progress(phase="idle", status=msg("update.cancelled"))
+                else:
+                    self._set_progress(phase="error", status=exc, error=exc)
+
+        self.update_thread = threading.Thread(target=worker, daemon=True)
+        self.update_thread.start()
+        return {"ok": True}
+
+    @bridge_errors
+    def cancel_update(self) -> dict:
+        self.update_cancel.set()
+        return {"ok": True}
+
+    @bridge_errors
+    def apply_update(self) -> dict:
+        with self._lock:
+            phase = self._state.get("phase")
+        if phase != "updateReady":
+            raise ValueError(msg("update.notReady"))
+        apply_staged_update(app_install_dir())
+        return {"ok": True}
+
 
 def show_startup_error(locale: str, detail: str) -> None:
     root = tk.Tk()
@@ -469,6 +570,7 @@ def main() -> None:
         on_top=True,
     )
     api.window = window
+    api.start_background_check()
     try:
         webview.start(gui="edgechromium", debug=False)
     except Exception as exc:

@@ -52,7 +52,13 @@ powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 ```
 
-产物位于 `dist\Jev对话助手\Jev对话助手.exe`。PyInstaller 会将 Vue 静态资源、OCR 模型和 Python 运行依赖一起打包。目标电脑需要 Microsoft Edge WebView2 Runtime；缺少时程序会显示提示。
+产物位于 `dist\Jev对话助手\Jev对话助手.exe`。PyInstaller 会将 Vue 静态资源、OCR 模型和 Python 运行依赖一起打包，同时生成更新辅助程序 `update_helper.exe`（需与主程序同目录分发）。目标电脑需要 Microsoft Edge WebView2 Runtime；缺少时程序会显示提示。
+
+## 应用内更新
+
+应用支持在软件内自行拉取更新。启动后会延迟几秒静默检查 GitHub Releases；发现新版本时主页顶部出现提示横幅，也可以在设置页的"版本与更新"中手动检查。检查只向 `api.github.com` 查询最新版本号，不发送任何聊天内容。
+
+确认更新后，应用在后台下载 Release 压缩包（可查看进度、可取消），随后进行 SHA256 校验（发布附件包含 `SHA256SUMS.txt` 时启用；否则降级为大小校验）并解压暂存。点击"重启并安装更新"后，主程序退出，辅助程序 `update_helper.exe` 用暂存内容原子替换安装目录并自动重启新版本；替换过程中任何一步失败都会回滚到旧版本，聊天数据与设置保存在 `%APPDATA%`，不受更新影响。
 
 ## 隐私边界
 

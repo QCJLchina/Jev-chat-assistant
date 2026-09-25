@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](docs/README.en.md) | [Français](docs/README.fr.md) | [Русский](docs/README.ru.md) | [日本語](docs/README.ja.md)
 
-**版本：v1.1.1**
+**版本：v1.2.0**
 
 本项目是基于开源项目https://github.com/Liyucheng1997/332_lab-jev-chat 的判断题库与分析流程进行的 Windows PC 端再开发。
 
@@ -53,6 +53,7 @@ powershell -ExecutionPolicy Bypass -File .\windows\build.ps1
 
 - OCR 在本机执行；点击分析后，识别出的聊天文本会发送给 TypeSafe Jev。
 - 启用回复模型后，对话文本和 Jev 判断会发送给所选模型服务生成候选回复。
+- 检查应用内更新时，仅向 GitHub 查询最新版本号，不发送任何聊天内容。
 - API Key 保存在 Windows 凭据管理器；`%APPDATA%\JevChatAssistant\settings.json` 仅保存非机密设置。
 - 模型列表和连接测试不会发送聊天内容。
 
