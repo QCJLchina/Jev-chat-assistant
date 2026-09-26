@@ -2,7 +2,7 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md)
 
-**Версия: v1.1.1**
+**Версия: v1.2.0**
 
 Проект представляет собой переработку для Windows PC на основе банка оценочных вопросов и процесса анализа открытого проекта https://github.com/Liyucheng1997/332_lab-jev-chat.
 

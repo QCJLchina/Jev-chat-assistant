@@ -3,17 +3,27 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOGS = {locale: json.loads((ROOT / "windows/locales" / f"{locale}.json").read_text(encoding="utf-8")) for locale in ("zh-CN", "en", "fr", "ru", "ja")}
-REPORTS = ROOT / "_reports" / "v1.1.1"
+
+
+def _app_version() -> str:
+    """Read the single-sourced version so smoke fixtures never drift from it."""
+    source = (ROOT / "windows/jev_windows/__init__.py").read_text(encoding="utf-8")
+    return re.search(r'__version__\s*=\s*"([^"]+)"', source).group(1)
+
+
+APP_VERSION = _app_version()
+REPORTS = ROOT / "_reports" / f"v{APP_VERSION}"
 
 MOCK = r"""
 const initial = {
-  language: 'zh-CN', resolved_language: 'zh-CN', revision: 1, version: '1.1.1',
+  language: 'zh-CN', resolved_language: 'zh-CN', revision: 1, version: '__VERSION__',
   status: '', status_message: {key: 'status.complete'}, error: '', error_message: null,
   phase: 'idle', preview: [{side:'other', text:'原始聊天 / Original conversation'}],
   analysis: {true_intent:'confirm_you_care', need:'care', best_action:'acknowledge',
@@ -70,7 +80,7 @@ def main():
                     page = browser.new_page(viewport={"width":width,"height":height})
                     errors = []
                     page.on("pageerror", lambda error: errors.append(str(error)))
-                    page.add_init_script(MOCK)
+                    page.add_init_script(MOCK.replace("__VERSION__", APP_VERSION))
                     page.goto(os.environ.get("JEV_FRONTEND_URL", "http://127.0.0.1:5173"), wait_until="networkidle")
                     expect(page.get_by_role("heading", name=CATALOGS['zh-CN']['analysis.title'], exact=True)).to_be_visible()
                     page.locator('.top-actions .button').click()

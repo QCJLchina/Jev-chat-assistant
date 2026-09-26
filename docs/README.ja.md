@@ -2,7 +2,7 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md)
 
-**バージョン: v1.1.1**
+**バージョン: v1.2.0**
 
 本プロジェクトは、オープンソースプロジェクト https://github.com/Liyucheng1997/332_lab-jev-chat の判定問題バンクと分析フローを基にした Windows PC 向けの再開発です。
 

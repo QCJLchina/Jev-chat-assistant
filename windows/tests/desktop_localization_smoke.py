@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import tempfile
@@ -20,7 +21,7 @@ import win32gui
 import win32process
 from playwright.sync_api import expect, sync_playwright
 
-from ui_localization_smoke import CATALOGS, REPORTS
+from ui_localization_smoke import APP_VERSION, CATALOGS, REPORTS
 
 
 def wait_for(check, timeout=30):
@@ -105,7 +106,7 @@ def main():
                 page.locator('#interface-language').select_option(locale)
                 expect(page.locator('html')).to_have_attribute('lang',locale)
                 assert json.loads(settings_file.read_text(encoding='utf-8'))['language'] == locale
-                expected_title = text['app.title'].replace('{version}','1.1.1')
+                expected_title = text['app.title'].replace('{version}', APP_VERSION)
                 hwnd = wait_for(lambda: next((h for h in windows_for(process.pid) if win32gui.GetWindowText(h)==expected_title),None))
                 assert json.loads(settings_file.read_text(encoding='utf-8'))['relationship'] == 'Migration fixture'
                 page.screenshot(path=str(REPORTS/f'desktop-{locale}-settings.png'),full_page=True)
