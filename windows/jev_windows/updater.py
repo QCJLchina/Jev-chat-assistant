@@ -65,10 +65,13 @@ def fetch_latest_release(timeout: float = 10.0) -> dict:
     tag = str(payload.get("tag_name") or "").strip()
     if not tag:
         raise UpdateError("update.noRelease")
-    checksum_asset = _asset(payload, ".txt")
-    sha256 = ""
-    if checksum_asset and str(checksum_asset.get("name", "")) == CHECKSUM_ASSET_NAME:
-        sha256 = _checksum_for(str(checksum_asset.get("browser_download_url", "")), asset.get("name"), timeout)
+    sha256 = _digest_from_asset(asset)
+    if not sha256:
+        # Older releases (or self-hosted mirrors) may publish an explicit checksum
+        # file instead of relying on GitHub's per-asset digest.
+        checksum_asset = _asset(payload, ".txt")
+        if checksum_asset and str(checksum_asset.get("name", "")) == CHECKSUM_ASSET_NAME:
+            sha256 = _checksum_for(str(checksum_asset.get("browser_download_url", "")), asset.get("name"), timeout)
     return {
         "version": tag,
         "download_url": str(asset.get("browser_download_url", "")),
@@ -76,6 +79,15 @@ def fetch_latest_release(timeout: float = 10.0) -> dict:
         "asset_name": str(asset.get("name", "")),
         "sha256": sha256,
     }
+
+
+def _digest_from_asset(asset: dict) -> str:
+    """GitHub computes a digest for every uploaded asset ("sha256:<hex>")."""
+    digest = str(asset.get("digest") or "").strip().lower()
+    if not digest.startswith("sha256:"):
+        return ""
+    value = digest.removeprefix("sha256:")
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else ""
 
 
 def _checksum_for(url: str, asset_name: object, timeout: float) -> str:

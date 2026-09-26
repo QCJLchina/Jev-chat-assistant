@@ -59,6 +59,61 @@ def test_fetch_latest_release_parses_assets(monkeypatch):
     assert info["sha256"] == "0" * 64
 
 
+def test_fetch_latest_release_uses_asset_digest(monkeypatch):
+    """GitHub supplies a per-asset digest; it takes precedence and needs no extra request."""
+    release_payload = json.dumps({
+        "tag_name": "v1.2.0",
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": "Jev-Chat-Assistant-v1.2.0-windows-x64.zip", "size": 1024,
+                "browser_download_url": "https://example.com/app.zip",
+                "digest": "sha256:" + "a" * 64,
+            },
+            {"name": "SHA256SUMS.txt", "size": 100, "browser_download_url": "https://example.com/SHA256SUMS.txt"},
+        ],
+    })
+    called: list[str] = []
+
+    def spy(request, timeout=None):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        called.append(url)
+        if "SHA256SUMS.txt" in url:
+            raise AssertionError("digest present -> checksum file must not be fetched")
+        response = FakeResponse(release_payload.encode("utf-8"))
+        response.headers = {"Content-Length": str(len(release_payload))}
+        return response
+    monkeypatch.setattr(updater.urllib.request, "urlopen", spy)
+
+    info = updater.fetch_latest_release()
+    assert info["sha256"] == "a" * 64
+    assert len(called) == 1 and "api.github.com" in called[0]
+
+
+def test_fetch_latest_release_falls_back_to_checksum_file(monkeypatch):
+    release_payload = json.dumps({
+        "tag_name": "v1.2.0", "draft": False, "prerelease": False,
+        "assets": [
+            {"name": "app.zip", "size": 10, "browser_download_url": "https://example.com/app.zip"},
+            {"name": "SHA256SUMS.txt", "size": 100, "browser_download_url": "https://example.com/SHA256SUMS.txt"},
+        ],
+    })
+    sums = "b" * 64 + "  app.zip\n"
+    _patch_urlopen(monkeypatch, {"api.github.com": release_payload, "SHA256SUMS.txt": sums})
+    assert updater.fetch_latest_release()["sha256"] == "b" * 64
+
+
+@pytest.mark.parametrize("digest", ["", "sha256:not-hex", "md5:" + "a" * 64, "sha256:" + "a" * 63])
+def test_fetch_latest_release_ignores_unusable_digest(monkeypatch, digest):
+    asset = {"name": "app.zip", "size": 10, "browser_download_url": "https://example.com/app.zip"}
+    if digest:
+        asset["digest"] = digest
+    release_payload = json.dumps({"tag_name": "v1.2.0", "draft": False, "prerelease": False, "assets": [asset]})
+    _patch_urlopen(monkeypatch, {"api.github.com": release_payload})
+    assert updater.fetch_latest_release()["sha256"] == ""
+
+
 def test_fetch_latest_release_skips_prerelease(monkeypatch):
     release_payload = json.dumps({"tag_name": "v2.0.0", "draft": False, "prerelease": True, "assets": []})
     _patch_urlopen(monkeypatch, {"api.github.com": release_payload})

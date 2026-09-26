@@ -99,11 +99,50 @@ jobs:
         run: |
           $zip = "release-assets/Jev-Chat-Assistant-v$env:APP_VERSION-windows-x64.zip"
           $assetName = [System.IO.Path]::GetFileName($zip)
+
+          # 用 windows/CHANGELOG.md 中对应版本的章节作为 Release 说明。
+          # --generate-notes 在没有 Pull Request 时几乎为空，因此这里自行渲染。
+          $tag = $env:RELEASE_TAG
+          $changelogPath = Join-Path $PWD 'windows/CHANGELOG.md'
+          if (!(Test-Path -LiteralPath $changelogPath -PathType Leaf)) {
+            throw "找不到更新日志：windows/CHANGELOG.md"
+          }
+          $changelog = Get-Content -LiteralPath $changelogPath -Raw -Encoding UTF8
+          $tagPattern = [regex]::Escape($tag)
+          $pattern = '(?ms)^##\s+' + $tagPattern + '\s*\r?\n(.*?)(?=^##\s|\z)'
+          $match = [regex]::Match($changelog, $pattern)
+          if (-not $match.Success) {
+            throw "windows/CHANGELOG.md 中缺少 '$tag' 章节，请先补充更新日志再发版"
+          }
+          $notes = $match.Groups[1].Value.Trim()
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            throw "windows/CHANGELOG.md 的 '$tag' 章节为空，请补充本版本变更说明"
+          }
+          $nl = [Environment]::NewLine
+          $lines = @(
+            $notes,
+            "",
+            "## 下载与安装",
+            "",
+            "1. 从下方 Assets 下载 ``$assetName`` 并解压，保留完整目录结构（``_internal`` 需与主程序同级）",
+            "2. 安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)",
+            "3. 运行 ``Jev对话助手.exe``，首次使用在设置页填写 Jev API Key",
+            ""
+          )
+          $body = [string]::Join($nl, $lines)
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'release-notes.md'), $body, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "Release 说明已生成（$($body.Length) 字符）"
+
           $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
-              --title "Jev 对话助手 $env:RELEASE_TAG" --generate-notes --verify-tag
+              --title "Jev 对话助手 $env:RELEASE_TAG" --notes-file release-notes.md --verify-tag
             if ($LASTEXITCODE -ne 0) { throw "创建 Release $env:RELEASE_TAG 失败" }
+          }
+          else {
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
+              --title "Jev 对话助手 $env:RELEASE_TAG" --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "更新 Release $env:RELEASE_TAG 说明失败" }
           }
           gh release upload $env:RELEASE_TAG $zip --repo $env:GITHUB_REPOSITORY --clobber
           if ($LASTEXITCODE -ne 0) { throw "上传发布包到 Release $env:RELEASE_TAG 失败" }
