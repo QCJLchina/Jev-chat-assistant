@@ -12,6 +12,37 @@ from .windows_api import WeChatWindow, client_rect_on_screen, screenshot
 
 _OCR_ENGINE = None
 
+# --- OCR / UIA extraction tuning -------------------------------------------------
+# These values were tuned against real chat layouts. They encode layout
+# assumptions, so keep the intent with the number when adjusting.
+# Longest OCR string accepted; longer runs are usually container text, not a message.
+MAX_TEXT_LENGTH = 500
+# UI Automation tree depth; chat text sits well above this in practice.
+UIA_MAX_DEPTH = 14
+# A single UIA container name is not enough to trust; require this many distinct lines.
+MIN_DISTINCT_UIA_LINES = 2
+# Ignore degenerate boxes produced by rendering artifacts.
+MIN_BOX_SIDE_PX = 1
+# --- Row/message grouping --------------------------------------------------------
+# Two boxes share a row when their vertical centers are within this many pixels...
+ROW_TOLERANCE_MIN_PX = 13
+# ...or within this fraction of the taller box's height, whichever is larger.
+ROW_TOLERANCE_HEIGHT_RATIO = 0.65
+# Fraction of the region width around the midline treated as "system/timestamp".
+CENTER_DEAD_ZONE_RATIO = 0.07
+# Centered lines narrower than this fraction of the width are system notices.
+CENTER_LINE_MAX_WIDTH_RATIO = 0.55
+# Consecutive same-speaker lines merge when vertically within this many pixels...
+MESSAGE_MERGE_MIN_GAP_PX = 8
+# ...or this fraction of the shorter box height.
+MESSAGE_MERGE_GAP_RATIO = 0.45
+# Negative gaps occur from slight overlap; tolerate this many pixels.
+MESSAGE_MERGE_OVERLAP_PX = 2
+# Merged lines must share a left (other) or right (me) edge within this fraction.
+EDGE_ALIGNMENT_RATIO = 0.08
+# Cap how many trailing messages are sent for analysis.
+MAX_MESSAGES = 10
+
 
 @dataclass(frozen=True)
 class TextBox:
@@ -40,22 +71,22 @@ def _uia_boxes(window: WeChatWindow, area: Rect) -> list[TextBox]:
 
         root = auto.ControlFromHandle(window.hwnd)
         boxes: list[TextBox] = []
-        for control, depth in auto.WalkControl(root, maxDepth=14):
+        for control, depth in auto.WalkControl(root, maxDepth=UIA_MAX_DEPTH):
             if depth == 0:
                 continue
             name = _clean_text(control.Name or "")
-            if not name or len(name) > 500:
+            if not name or len(name) > MAX_TEXT_LENGTH:
                 continue
             bound = control.BoundingRectangle
             rect = Rect(int(bound.left), int(bound.top), int(bound.right), int(bound.bottom))
             cx = (rect.left + rect.right) // 2
             cy = (rect.top + rect.bottom) // 2
-            if area.contains(cx, cy) and rect.width > 1 and rect.height > 1:
+            if area.contains(cx, cy) and rect.width > MIN_BOX_SIDE_PX and rect.height > MIN_BOX_SIDE_PX:
                 boxes.append(TextBox(name, rect))
         # A useful accessibility result has multiple distinct chat lines. A lone
         # container name is not enough, so let OCR handle it.
         distinct = {box.text for box in boxes}
-        return boxes if len(distinct) >= 2 else []
+        return boxes if len(distinct) >= MIN_DISTINCT_UIA_LINES else []
     except Exception:
         return []
 
@@ -93,7 +124,7 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
         cy = (box.rect.top + box.rect.bottom) / 2
         if rows:
             last_cy = sum((b.rect.top + b.rect.bottom) / 2 for b in rows[-1]) / len(rows[-1])
-            tolerance = max(13, box.rect.height * 0.65)
+            tolerance = max(ROW_TOLERANCE_MIN_PX, box.rect.height * ROW_TOLERANCE_HEIGHT_RATIO)
             if abs(cy - last_cy) <= tolerance:
                 rows[-1].append(box)
                 continue
@@ -102,7 +133,7 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
     messages: list[Message] = []
     message_bounds: list[Rect] = []
     midpoint = area.left + area.width / 2
-    dead_zone = area.width * 0.07
+    dead_zone = area.width * CENTER_DEAD_ZONE_RATIO
     for row in rows:
         row.sort(key=lambda box: box.rect.left)
         text = _clean_text(" ".join(box.text for box in row))
@@ -114,7 +145,7 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
         center = (left + right) / 2
         # Timestamp/system lines are normally centered and should not be treated
         # as either speaker.
-        if abs(center - midpoint) <= dead_zone and right - left < area.width * 0.55:
+        if abs(center - midpoint) <= dead_zone and right - left < area.width * CENTER_LINE_MAX_WIDTH_RATIO:
             continue
         side = "me" if center > midpoint else "other"
         if messages and messages[-1].side == side:
@@ -125,8 +156,11 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
                 if side == "me"
                 else abs(bound.left - previous.left)
             )
-            max_gap = max(8, min(bound.height, previous.height) * 0.45)
-            if -2 <= gap <= max_gap and edge_delta <= area.width * 0.08:
+            max_gap = max(
+                MESSAGE_MERGE_MIN_GAP_PX,
+                min(bound.height, previous.height) * MESSAGE_MERGE_GAP_RATIO,
+            )
+            if -MESSAGE_MERGE_OVERLAP_PX <= gap <= max_gap and edge_delta <= area.width * EDGE_ALIGNMENT_RATIO:
                 messages[-1] = Message(side, f"{messages[-1].text} {text}")
                 message_bounds[-1] = Rect(
                     min(previous.left, bound.left),
@@ -137,7 +171,7 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
                 continue
         messages.append(Message(side, text))
         message_bounds.append(bound)
-    return [message for message in messages if message.text][-10:]
+    return [message for message in messages if message.text][-MAX_MESSAGES:]
 
 
 def capture_chat(window: WeChatWindow, relative_chat_rect: Rect) -> ChatSnapshot:
@@ -157,7 +191,9 @@ def capture_chat(window: WeChatWindow, relative_chat_rect: Rect) -> ChatSnapshot
     if not messages:
         raise RuntimeError(msg("error.noChatText"))
     raw_text = "\n".join(box.text for box in boxes)
-    return ChatSnapshot(window.title or msg("capture.wechatTitle"), messages, raw_text)
+    # Keep the real window title only. A localized fallback is applied at display
+    # time so the allowlist check never matches against translated placeholder text.
+    return ChatSnapshot(window.title or "", messages, raw_text)
 
 
 def capture_desktop_chat(
@@ -189,4 +225,5 @@ def capture_desktop_chat(
     messages = _boxes_to_messages(boxes, screen_rect)
     if not messages:
         raise RuntimeError(msg("error.noText"))
-    return ChatSnapshot(title or msg("capture.desktopTitle"), messages, "\n".join(box.text for box in boxes))
+    # See capture_chat: keep the raw title, localize at display time.
+    return ChatSnapshot(title or "", messages, "\n".join(box.text for box in boxes))

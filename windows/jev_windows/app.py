@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-from .i18n import msg
-
 import json
 import os
-from dataclasses import replace
-from .i18n import LANGUAGES, bridge_errors, describe, render, resolve_language, settings_lock, translate
 import re
 import sys
-import tempfile
 import threading
 import tkinter as tk
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import webview
 
 from . import __version__
-from .capture import capture_chat, capture_desktop_chat
+from .analysis import start_analysis
+from .calibration import is_usable_selection, select_region
 from .config import (
     AppConfig,
     ModelProfile,
@@ -28,100 +25,57 @@ from .config import (
     save_api_key,
     save_model_api_key,
 )
-from .deepseek_client import SUPPORTED_PROTOCOLS, DeepSeekError, generate_suggestions, list_models, test_connection
-from .jev_api import judge, recommend_replies
-from .models import Analysis, Rect
-from .safety import assert_safe_chat
-from .updater import (
-    UpdateError,
-    app_install_dir,
-    apply_staged_update,
-    compare_versions,
-    download_release,
-    fetch_latest_release,
-    stage_update,
-    verify_sha256,
+from .deepseek_client import SUPPORTED_PROTOCOLS, list_models, test_connection
+from .i18n import (
+    LANGUAGES,
+    bridge_errors,
+    msg,
+    resolve_language,
+    settings_lock,
+    translate,
 )
-from .windows_api import (
-    ensure_dpi_awareness,
-    find_wechat_window,
-    screenshot,
-    virtual_screen_rect,
-    window_title_at,
-)
-from .workflow import capture_without_overlay
+from .models import Rect
+from .state import ProgressState
+from .update_service import UpdateService
+from .windows_api import ensure_dpi_awareness, virtual_screen_rect
 
 
 def _rect_data(rect: Rect | None) -> dict | None:
     return {"left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom} if rect else None
 
 
-def _analysis_data(analysis: Analysis | None) -> dict | None:
-    if not analysis:
-        return None
-    return {
-        "true_intent": analysis.true_intent,
-        "danger_level": analysis.danger_level,
-        "need": analysis.need,
-        "best_action": analysis.best_action,
-        "should_reply_now": analysis.should_reply_now,
-        "tension_resolved": analysis.tension_resolved,
-        "latency_ms": analysis.latency_ms,
-    }
-
-
-def overlay_geometry(rect: Rect) -> str:
-    # Tk reads a bare negative offset ("-500") as "distance from the right
-    # edge". An explicit "+-500" selects x=-500, which is what secondary
-    # monitors to the left of the primary need.
-    return f"{rect.width}x{rect.height}+{rect.left}+{rect.top}"
-
-
 class DesktopApi:
-    """Small, secret-safe bridge between Vue and existing Windows workflows."""
+    """Thin, secret-safe façade over the Windows workflows.
+
+    Owns no domain logic: validation and orchestration live in the analysis,
+    calibration, and update modules. This class only translates between the Vue
+    bridge, persisted settings, and those services.
+    """
 
     def __init__(self):
         self.settings = AppConfig.load()
         self.resolved_language = resolve_language(self.settings.language)
         self.window = None
         self._lock = threading.RLock()
-        self._state = {
-            "status": msg("status.initial"),
-            "phase": "idle",
-            "preview": [],
-            "analysis": None,
-            "suggestions": [],
-            "error": "",
-        }
-        self._state["status_message"] = describe(self._state["status"])
-        self._state["error_message"] = None
-        self._state_revision = 0
-        self.update_info: dict | None = None
-        self.update_cancel = threading.Event()
-        self.update_thread: threading.Thread | None = None
+        self.progress = ProgressState(self.resolved_language)
+        self.updates = UpdateService(self.progress)
+
+    # ------------------------------------------------------------------
+    # Progress plumbing
+    # ------------------------------------------------------------------
 
     def _set_progress(self, **updates: object) -> None:
-        with self._lock:
-            for field in ("status", "error"):
-                if field in updates:
-                    updates[field + "_message"] = describe(updates[field])
-                    if isinstance(updates[field], Exception):
-                        updates[field] = str(updates[field])
-            self._state.update(updates)
-            self._state_revision += 1
+        self.progress.update(**updates)
 
     def get_progress(self, known_revision: int = -1) -> dict:
-        with self._lock:
-            revision = self._state_revision
-            if known_revision == revision:
-                return {"revision": revision}
-            return {"revision": revision, **self._render_state()}
+        return self.progress.poll(known_revision)
 
     def _render_state(self) -> dict:
-        state = dict(self._state)
-        for field in ("status", "error"):
-            state[field] = render(state.get(field + "_message"), self.resolved_language, str(state[field]))
-        return state
+        return self.progress.rendered()
+
+    # ------------------------------------------------------------------
+    # Settings and language
+    # ------------------------------------------------------------------
 
     @bridge_errors
     def set_language(self, language: str) -> dict:
@@ -136,7 +90,7 @@ class DesktopApi:
                 raise RuntimeError(msg("language.failed", detail=str(exc))) from None
             self.settings.language = language
             self.resolved_language = resolved
-            self._state_revision += 1
+            self.progress.set_language(resolved)
         # pywebview title updates marshal to the UI thread; never block the bridge.
         if self.window:
             threading.Thread(target=self._update_title, daemon=True).start()
@@ -157,9 +111,8 @@ class DesktopApi:
         }
 
     def get_state(self) -> dict:
-        with self._lock:
-            state = self._render_state()
-            revision = self._state_revision
+        state = self._render_state()
+        revision = self.progress.revision()
         return {
             **state,
             "revision": revision,
@@ -269,12 +222,14 @@ class DesktopApi:
         self.settings.save()
         return self.get_state()
 
+    # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
+
     @bridge_errors
     def start_calibration(self) -> dict:
-        try:
-            client = virtual_screen_rect()
-        except Exception as exc:
-            raise
+        # Raises if no virtual screen is available; surfaced by @bridge_errors.
+        client = virtual_screen_rect()
         self._set_progress(phase="calibrating", status=msg("status.calibrating"))
 
         def overlay() -> None:
@@ -284,146 +239,46 @@ class DesktopApi:
             if self.window:
                 self.window.hide()
             try:
-                root = tk.Tk()
+                select_region(client, self.resolved_language, finish)
             except Exception as exc:
                 self._set_progress(phase="error", status=msg("status.overlayFailed", detail=exc))
                 if self.window:
                     self.window.show()
                     self.window.restore()
-                return
-            root.overrideredirect(True)
-            root.attributes("-topmost", True)
-            root.attributes("-alpha", 0.28)
-            root.geometry(overlay_geometry(client))
-            canvas = tk.Canvas(root, bg="#111827", highlightthickness=0, cursor="crosshair")
-            canvas.pack(fill="both", expand=True)
-            canvas.create_text(client.width // 2, 28, text=translate("capture.overlay", self.resolved_language), fill="white", font=("Microsoft YaHei UI", 14, "bold"))
-            start: list[tuple[int, int] | None] = [None]
-            shape: list[int | None] = [None]
 
-            def finish(rect: Rect | None) -> None:
-                if rect and rect.width >= 200 and rect.height >= 100:
-                    with self._lock:
-                        self.settings.chat_rect = rect
-                        self.settings.chat_rect_mode = "screen"
-                        self.settings.save()
-                    self._set_progress(status=msg("status.areaSaved"), phase="idle")
-                elif rect:
-                    self._set_progress(status=msg("status.areaSmall"), phase="idle")
-                else:
-                    self._set_progress(status=msg("status.cancelled"), phase="idle")
-                root.destroy()
-                if self.window:
-                    self.window.show()
-                    self.window.restore()
-
-            def down(event) -> None:
-                start[0] = (event.x, event.y)
-                shape[0] = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#1497f5", width=4)
-
-            def drag(event) -> None:
-                if start[0] and shape[0]:
-                    canvas.coords(shape[0], start[0][0], start[0][1], event.x, event.y)
-
-            def up(event) -> None:
-                if not start[0]:
-                    return
-                left, right = sorted((start[0][0], event.x))
-                top, bottom = sorted((start[0][1], event.y))
-                left += client.left
-                right += client.left
-                top += client.top
-                bottom += client.top
-                finish(Rect(left, top, right, bottom))
-
-            canvas.bind("<Button-1>", down)
-            canvas.bind("<B1-Motion>", drag)
-            canvas.bind("<ButtonRelease-1>", up)
-            root.bind("<Escape>", lambda _: finish(None))
-            root.mainloop()
+        def finish(rect: Rect | None) -> None:
+            if rect and is_usable_selection(rect):
+                with self._lock:
+                    self.settings.chat_rect = rect
+                    self.settings.chat_rect_mode = "screen"
+                    self.settings.save()
+                self._set_progress(status=msg("status.areaSaved"), phase="idle")
+            elif rect:
+                self._set_progress(status=msg("status.areaSmall"), phase="idle")
+            else:
+                self._set_progress(status=msg("status.cancelled"), phase="idle")
+            if self.window:
+                self.window.show()
+                self.window.restore()
 
         threading.Thread(target=overlay, daemon=True).start()
         return {"ok": True}
 
+    # ------------------------------------------------------------------
+    # Analysis
+    # ------------------------------------------------------------------
+
     @bridge_errors
     def analyze(self) -> dict:
-        with self._lock:
-            if self._state["phase"] not in {"idle", "error"}:
-                return {"ok": False, "error": msg("error.busy")}
-        if not self.settings.chat_rect:
-            return {"ok": False, "error": msg("error.selectFirst")}
-        if self.settings.chat_rect_mode == "wechat-client":
-            return {"ok": False, "error": msg("error.legacyArea")}
-        jev_key = load_api_key()
-        if not jev_key:
-            return {"ok": False, "error": msg("error.jevKey")}
-        selected_profile = next((p for p in self.settings.model_profiles if p.id == self.settings.active_model_id), None)
-        profile_key = load_model_api_key(selected_profile.id) if selected_profile else ""
-        profile = selected_profile if selected_profile and profile_key else None
-
-        with self._lock:
-            if self._state["phase"] not in {"idle", "error"}:
-                return {"ok": False, "error": msg("error.busy")}
-            self._set_progress(
-                phase="capturing", status=msg("status.capturing"),
-                error="", analysis=None, suggestions=[],
-            )
-
-        def worker() -> None:
-            try:
-                window = find_wechat_window() if self.settings.chat_rect_mode == "wechat-client" else None
-                hide = lambda: self.window.hide() if self.window else None
-                show = lambda: (self.window.show(), self.window.restore()) if self.window else None
-                if window is not None:
-                    snapshot = capture_without_overlay(
-                        hide, show, lambda: capture_chat(window, self.settings.chat_rect)
-                    )
-                else:
-                    def capture_frame(area: Rect) -> tuple[object, str]:
-                        frame = capture_without_overlay(
-                            hide,
-                            show,
-                            lambda: (
-                                screenshot(area),
-                                window_title_at(area.left + area.width // 2, area.top + area.height // 2),
-                            ),
-                        )
-                        self._set_progress(phase="recognizing", status=msg("status.recognizing"))
-                        return frame
-
-                    snapshot = capture_desktop_chat(self.settings.chat_rect, capture_frame)
-                assert_safe_chat(snapshot.raw_text)
-                if self.settings.allowed_titles and not any(title in snapshot.title for title in self.settings.allowed_titles):
-                    raise RuntimeError(msg("error.allowlist", name=snapshot.title))
-                self._set_progress(
-                    phase="judging", status=msg("status.judging", count=len(snapshot.messages)),
-                    preview=[{"side": m.side, "text": m.text} for m in snapshot.messages[-8:]],
-                )
-                analysis = judge(snapshot, self.settings.relationship, jev_key)
-                self._set_progress(phase="generating" if profile else "idle", status=msg("status.generating") if profile else msg("status.judged"), analysis=_analysis_data(analysis))
-                if profile:
-                    replies = generate_suggestions(
-                        snapshot, self.settings.relationship, analysis, profile_key,
-                        profile.model, profile.base_url, profile.max_tokens, profile.protocol,
-                    )
-                    self._set_progress(phase="ranking", status=msg("status.ranking"))
-                    try:
-                        suggestions = recommend_replies(
-                            snapshot, self.settings.relationship, replies, jev_key
-                        )
-                        status = msg("status.complete")
-                    except Exception as rank_error:
-                        suggestions = [
-                            {"text": reply, "probability": None, "confidence": None, "recommended": False}
-                            for reply in replies
-                        ]
-                        status = msg("status.rankFailed", detail=rank_error)
-                    self._set_progress(phase="idle", status=status, suggestions=suggestions)
-            except Exception as exc:
-                self._set_progress(phase="error", status=exc, error=exc)
-
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            start_analysis(self.settings, self.progress, self.resolved_language, self.window)
+        except ValueError as exc:
+            return {"ok": False, "error": exc.args[0]}
         return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # Window and clipboard
+    # ------------------------------------------------------------------
 
     def set_on_top(self, value: bool) -> dict:
         if self.window:
@@ -452,91 +307,41 @@ class DesktopApi:
         return {"ok": True}
 
     # ------------------------------------------------------------------
-    # In-app update bridge
+    # In-app update
     # ------------------------------------------------------------------
 
     @bridge_errors
     def check_for_updates(self) -> dict:
-        release = fetch_latest_release()
-        info = {
-            "update_available": compare_versions(__version__, release["version"]) < 0,
-            "latest_version": release["version"],
-            "current_version": __version__,
-            "download_url": release["download_url"],
-            "size": release["size"],
-            "sha256": release["sha256"],
-        }
-        self.update_info = info
-        with self._lock:
-            self._state["update_info"] = info
-            self._state_revision += 1
-        return info
+        return self.updates.check()
 
     def start_background_check(self) -> None:
-        """Silent update check shortly after startup; never blocks or errors UI."""
-
-        def worker() -> None:
-            threading.Event().wait(3.0)
-            try:
-                self.check_for_updates()
-            except Exception:
-                pass
-
-        threading.Thread(target=worker, daemon=True).start()
+        self.updates.start_background_check()
 
     @bridge_errors
     def download_update(self) -> dict:
-        if self.update_thread and self.update_thread.is_alive():
-            raise ValueError(msg("update.inProgress"))
-        info = self.update_info or self._state.get("update_info")
-        if not info or not info.get("download_url"):
-            raise ValueError(msg("update.notChecked"))
-        self.update_cancel = threading.Event()
-        self._set_progress(phase="updating", status=msg("update.downloading"), error=None)
-
-        def worker() -> None:
-            temp_zip = Path(tempfile.gettempdir()) / f"jevchat-update-{info['latest_version']}.zip"
-            try:
-                def progress(percent: int) -> None:
-                    self._set_progress(status=msg("update.downloading", percent=percent))
-
-                download_release(
-                    info["download_url"], temp_zip, expected_size=info.get("size", 0),
-                    progress_cb=progress, cancel_event=self.update_cancel,
-                )
-                if info.get("sha256"):
-                    self._set_progress(status=msg("update.verifying"))
-                    if not verify_sha256(temp_zip, info["sha256"]):
-                        temp_zip.unlink(missing_ok=True)
-                        raise UpdateError("update.checksumMismatch")
-                self._set_progress(status=msg("update.staging"))
-                stage_update(temp_zip)
-                temp_zip.unlink(missing_ok=True)
-                self._set_progress(status=msg("update.ready"), phase="updateReady")
-            except Exception as exc:
-                temp_zip.unlink(missing_ok=True)
-                if isinstance(exc, UpdateError) and str(exc.args[0]) == "update.cancelled":
-                    self._set_progress(phase="idle", status=msg("update.cancelled"))
-                else:
-                    self._set_progress(phase="error", status=exc, error=exc)
-
-        self.update_thread = threading.Thread(target=worker, daemon=True)
-        self.update_thread.start()
+        self.updates.download()
         return {"ok": True}
 
     @bridge_errors
     def cancel_update(self) -> dict:
-        self.update_cancel.set()
+        self.updates.cancel_download()
         return {"ok": True}
 
     @bridge_errors
     def apply_update(self) -> dict:
-        with self._lock:
-            phase = self._state.get("phase")
-        if phase != "updateReady":
-            raise ValueError(msg("update.notReady"))
-        apply_staged_update(app_install_dir())
+        self.updates.apply()
+        # The helper waits for this process to exit. Shut down on a timer so the
+        # bridge returns first and Python can run its normal cleanup.
+        threading.Timer(0.5, self._shutdown_for_update).start()
         return {"ok": True}
+
+    def _shutdown_for_update(self) -> None:
+        try:
+            if self.window:
+                self.window.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
 
 def show_startup_error(locale: str, detail: str) -> None:

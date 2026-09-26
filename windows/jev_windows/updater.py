@@ -8,12 +8,14 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+
+from .i18n import msg
 
 RELEASES_API_URL = "https://api.github.com/repos/QCJLchina/Jev-chat-assistant/releases/latest"
 APP_EXE_NAME = "Jev对话助手.exe"
@@ -22,10 +24,20 @@ BACKUP_DIR_NAME = "_update_backup"
 MANIFEST_NAME = "update_manifest.json"
 CHECKSUM_ASSET_NAME = "SHA256SUMS.txt"
 CHUNK_BYTES = 256 * 1024
+MOVE_RETRY_ATTEMPTS = 10
+MOVE_RETRY_DELAY = 0.5
 
 
 class UpdateError(Exception):
-    """Structured update failure the bridge can surface."""
+    """Update failure carrying a translatable message key.
+
+    The key is wrapped as a Message so the bridge can render it in the user's
+    language; a bare string here would surface as a generic "unexpected error".
+    """
+
+    def __init__(self, key: str):
+        self.key = key
+        super().__init__(msg(key))
 
 
 def app_install_dir() -> Path:
@@ -181,7 +193,6 @@ def stage_update(zip_path: Path, install_dir: Path | None = None) -> Path:
                 raise UpdateError("update.unsafeZip")
             top_prefix = os.path.commonprefix([name for name in names if name.strip()]).split("/")[0]
             entries = {name.split("/")[0] for name in names if name.strip()}
-            unpack_into = staging
             if len(entries) == 1 and top_prefix and not top_prefix.endswith(".exe"):
                 # Zip wraps everything in a single folder: extract, then hoist.
                 inner = staging / "_unwrap"
@@ -217,7 +228,13 @@ def _find_staged_exe(staging: Path) -> Path | None:
 
 
 def apply_staged_update(install_dir: Path | None = None, helper_path: Path | None = None) -> None:
-    """Hand control to the helper process; this process must exit immediately."""
+    """Write the manifest and launch the helper; the caller then exits cleanly.
+
+    This must not terminate the process itself: it is invoked from a pywebview
+    bridge call, and killing the interpreter there would skip cleanup and race
+    the helper's launch. The helper waits for this process to exit before it
+    touches the install directory.
+    """
     install_dir = install_dir or app_install_dir()
     staging = install_dir / STAGING_DIR_NAME
     if not _find_staged_exe(staging):
@@ -227,6 +244,7 @@ def apply_staged_update(install_dir: Path | None = None, helper_path: Path | Non
         "staging_dir": str(staging),
         "backup_dir": str(install_dir / BACKUP_DIR_NAME),
         "exe_name": APP_EXE_NAME,
+        "parent_pid": os.getpid(),
     }
     manifest_path = install_dir / MANIFEST_NAME
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -234,9 +252,49 @@ def apply_staged_update(install_dir: Path | None = None, helper_path: Path | Non
     if not helper.exists():
         manifest_path.unlink(missing_ok=True)
         raise UpdateError("update.helperMissing")
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen([str(helper)], cwd=str(install_dir), close_fds=True, creationflags=flags)
-    os._exit(0)
+    flags = _detached_flags()
+    try:
+        subprocess.Popen([str(helper)], cwd=str(install_dir), close_fds=True, creationflags=flags)
+    except OSError as exc:
+        manifest_path.unlink(missing_ok=True)
+        raise UpdateError("update.helperMissing") from exc
+
+
+def _detached_flags() -> int:
+    return getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+
+def _wait_for_process_exit(pid: int, timeout_ms: int = 60000) -> bool:
+    """Block until the parent exits so the helper only moves unlocked files."""
+    if pid <= 0 or os.name != "nt":
+        return True
+    import ctypes
+
+    SYNCHRONIZE = 0x00100000
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        # Already gone, or not inspectable: assume it is safe to continue.
+        return True
+    try:
+        return kernel32.WaitForSingleObject(handle, timeout_ms) == 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _move_with_retry(src: str, dst: str) -> None:
+    """A just-exited process can hold locks briefly; retry before giving up."""
+    last: OSError | None = None
+    for attempt in range(MOVE_RETRY_ATTEMPTS):
+        try:
+            shutil.move(src, dst)
+            return
+        except OSError as exc:
+            last = exc
+            if attempt < MOVE_RETRY_ATTEMPTS - 1:
+                time.sleep(MOVE_RETRY_DELAY)
+    assert last is not None
+    raise last
 
 
 def run_update_helper(install_dir: Path) -> int:
@@ -252,25 +310,36 @@ def run_update_helper(install_dir: Path) -> int:
     exe_name = manifest.get("exe_name") or APP_EXE_NAME
     if not (staging / exe_name).exists():
         return 3
+    # The app is still shutting down when the helper starts; wait for it so the
+    # install directory is not locked mid-move.
+    if not _wait_for_process_exit(int(manifest.get("parent_pid") or 0)):
+        return 6
     if install.exists():
         try:
-            shutil.move(str(install), str(backup))
+            _move_with_retry(str(install), str(backup))
         except OSError:
             return 4
     try:
-        shutil.move(str(staging), str(install))
+        _move_with_retry(str(staging), str(install))
     except OSError:
-        shutil.move(str(backup), str(install))
+        try:
+            _move_with_retry(str(backup), str(install))
+        except OSError:
+            pass
         return 5
     shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging, ignore_errors=True)
     manifest_path.unlink(missing_ok=True)
-    subprocess.Popen(
-        [str(install / exe_name)],
-        cwd=str(install),
-        close_fds=True,
-        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-    )
+    try:
+        subprocess.Popen(
+            [str(install / exe_name)],
+            cwd=str(install),
+            close_fds=True,
+            creationflags=_detached_flags(),
+        )
+    except OSError:
+        # The swap succeeded; a failed relaunch must not be reported as failure.
+        pass
     return 0
 
 

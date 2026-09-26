@@ -5,7 +5,7 @@ import urllib.parse
 
 import pytest
 
-from jev_windows import deepseek_client
+from jev_windows import deepseek_client, i18n
 from jev_windows.models import Analysis, ChatSnapshot, Message
 
 
@@ -52,6 +52,59 @@ def test_invalid_deepseek_key_has_readable_error(monkeypatch):
 
     with pytest.raises(deepseek_client.DeepSeekError, match="密钥无效"):
         deepseek_client._post("bad-key", {"messages": []})
+
+
+def test_error_carries_http_status_as_data_not_localized_prose(monkeypatch):
+    """The retry decision must not depend on text that changes with UI language."""
+    error = urllib.error.HTTPError(
+        deepseek_client.CHAT_URL, 401, "Unauthorized", {}, io.BytesIO(b"{}")
+    )
+    monkeypatch.setattr(
+        deepseek_client.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+    with pytest.raises(deepseek_client.DeepSeekError) as caught:
+        deepseek_client._post("bad-key", {"messages": []})
+    assert deepseek_client.error_status(caught.value) == 401
+
+
+def test_models_retry_with_key_is_driven_by_status_not_message_text(monkeypatch):
+    """A 401 from an unauthenticated probe must retry even in a locale whose
+    error text does not contain the digits '401'."""
+    catalogs = {locale: dict(i18n.catalog(locale)) for locale in ("zh-CN", "en")}
+    catalogs["en"]["error.model401"] = "Model API key rejected"
+    monkeypatch.setattr(i18n, "catalog", lambda locale: catalogs.get(locale, catalogs["zh-CN"]))
+    unauthorized = urllib.error.HTTPError(
+        "https://service.test/v1/models", 401, "Unauthorized", {}, io.BytesIO(b"{}")
+    )
+    calls = []
+
+    def fake_open(request, timeout=None):
+        calls.append(request.full_url)
+        if len(calls) == 1:
+            raise unauthorized
+        return io.BytesIO(json.dumps({"data": [{"id": "model-a"}]}).encode())
+
+    monkeypatch.setattr(deepseek_client.urllib.request, "urlopen", fake_open)
+    assert deepseek_client.list_models("https://service.test/v1", key="secret") == ["model-a"]
+    assert len(calls) == 2
+
+
+def test_models_does_not_retry_on_non_401_failures(monkeypatch):
+    forbidden = urllib.error.HTTPError(
+        "https://service.test/v1/models", 403, "Forbidden", {}, io.BytesIO(b"{}")
+    )
+    calls = []
+
+    def fake_open(request, timeout=None):
+        calls.append(request.full_url)
+        raise forbidden
+
+    monkeypatch.setattr(deepseek_client.urllib.request, "urlopen", fake_open)
+    with pytest.raises(deepseek_client.DeepSeekError):
+        deepseek_client.list_models("https://service.test/v1", key="secret")
+    assert len(calls) == 1
 
 
 def test_malformed_reply_payload_is_rejected(monkeypatch):

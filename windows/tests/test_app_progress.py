@@ -1,6 +1,6 @@
-from jev_windows import app
+from jev_windows import app, analysis
+from jev_windows.calibration import overlay_geometry
 from jev_windows.config import AppConfig
-from jev_windows.app import overlay_geometry
 from jev_windows.models import Rect
 
 
@@ -36,19 +36,21 @@ def test_second_analysis_cannot_start_while_first_worker_is_pending(monkeypatch)
         "load",
         classmethod(lambda cls: cls(language="zh-CN", chat_rect=Rect(0, 0, 800, 600))),
     )
-    monkeypatch.setattr(app, "load_api_key", lambda: "test-key")
-    monkeypatch.setattr(app, "load_model_api_key", lambda _profile_id: "")
+    # Analysis orchestration lives in its own module now; patch its seams.
+    monkeypatch.setattr(analysis, "load_api_key", lambda: "test-key")
+    monkeypatch.setattr(analysis, "load_model_api_key", lambda _profile_id: "")
     started = []
 
     class PendingWorker:
-        def __init__(self, *, target, daemon):
+        def __init__(self, *, target, daemon, args=()):
             self.target = target
             self.daemon = daemon
+            self.args = args
 
         def start(self):
             started.append(self)
 
-    monkeypatch.setattr(app.threading, "Thread", PendingWorker)
+    monkeypatch.setattr(analysis.threading, "Thread", PendingWorker)
     api = app.DesktopApi()
 
     assert api.analyze() == {"ok": True}

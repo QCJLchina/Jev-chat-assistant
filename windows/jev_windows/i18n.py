@@ -43,18 +43,50 @@ def translate(key: str, locale: str = "zh-CN", **params) -> str:
     def replace(match):
         name = match.group(1)
         value = params.get(name, match.group(0))
+        # Nested messages must render in the target locale, not in whatever
+        # locale was active when the inner message was constructed.
+        if isinstance(value, Message):
+            return render(value.message, locale)
         if isinstance(value, dict) and "key" in value:
             return render(value, locale)
         return str(value)
     return re.sub(r"\{([A-Za-z_][A-Za-z_0-9]*)\}", replace, template)
 
 
-class Message(str):
-    def __new__(cls, key: str, **params):
+class Message:
+    """A translatable message that keeps its key until presentation.
+
+    Deliberately NOT a str subclass. Inheriting from str froze the rendered text
+    in whatever locale was active at construction time, so any code reading a
+    message as a plain string silently got stale text instead of the current
+    language. Callers that genuinely need display text use str()/render().
+    """
+
+    __slots__ = ("message",)
+
+    def __init__(self, key: str, **params):
         normalized = {k: describe(v) if isinstance(v, (Message, Exception)) else v for k, v in params.items()}
-        obj = super().__new__(cls, translate(key, **normalized))
-        obj.message = {"key": key, "params": normalized}
-        return obj
+        self.message = {"key": key, "params": normalized}
+
+    def _identity(self) -> tuple[str, str]:
+        return (self.message["key"], repr(sorted(self.message["params"].items())))
+
+    def __str__(self) -> str:
+        # Bare coercion has no locale context; use the base catalog's language,
+        # matching translate()'s own fallback. Prefer render()/describe() when
+        # the target locale is known.
+        return render(self.message, "zh-CN")
+
+    def __repr__(self) -> str:
+        return f"Message({self.message['key']!r}, **{self.message['params']!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Message):
+            return self._identity() == other._identity()
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
 
 
 def msg(key: str, **params) -> Message:

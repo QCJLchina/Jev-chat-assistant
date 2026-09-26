@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import threading
 import zipfile
 
@@ -215,8 +216,6 @@ def test_apply_staged_update_writes_manifest(monkeypatch, tmp_path):
     (staging / updater.APP_EXE_NAME).write_bytes(b"MZ")
     helper = tmp_path / "update_helper.exe"
     helper.write_bytes(b"MZ")
-    exit_calls = []
-    monkeypatch.setattr(updater.os, "_exit", lambda code: exit_calls.append(code))
     launched = []
     monkeypatch.setattr(updater.subprocess, "Popen", lambda args, **kw: launched.append(args))
     updater.apply_staged_update(install_dir=tmp_path, helper_path=helper)
@@ -224,15 +223,47 @@ def test_apply_staged_update_writes_manifest(monkeypatch, tmp_path):
     assert manifest["staging_dir"] == str(staging)
     assert manifest["install_dir"] == str(tmp_path)
     assert manifest["backup_dir"] == str(tmp_path / updater.BACKUP_DIR_NAME)
-    assert launched and exit_calls == [0]
+    # The helper must know which process to wait for before moving files.
+    assert manifest["parent_pid"] == os.getpid()
+    assert launched
 
 
-def test_apply_staged_update_requires_helper(monkeypatch, tmp_path):
+def test_apply_staged_update_does_not_terminate_process(monkeypatch, tmp_path):
+    """The bridge caller must get a normal return; exiting here would skip cleanup."""
+    staging = tmp_path / updater.STAGING_DIR_NAME
+    staging.mkdir()
+    (staging / updater.APP_EXE_NAME).write_bytes(b"MZ")
+    helper = tmp_path / "update_helper.exe"
+    helper.write_bytes(b"MZ")
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda args, **kw: None)
+    killed = []
+    monkeypatch.setattr(updater.os, "_exit", lambda code: killed.append(code))
+    updater.apply_staged_update(install_dir=tmp_path, helper_path=helper)
+    assert killed == []
+
+
+def test_apply_staged_update_reports_missing_helper(monkeypatch, tmp_path):
     staging = tmp_path / updater.STAGING_DIR_NAME
     staging.mkdir()
     (staging / updater.APP_EXE_NAME).write_bytes(b"MZ")
     with pytest.raises(updater.UpdateError):
         updater.apply_staged_update(install_dir=tmp_path, helper_path=tmp_path / "missing.exe")
+    assert not (tmp_path / updater.MANIFEST_NAME).exists()
+
+
+def test_apply_staged_update_cleans_manifest_when_launch_fails(monkeypatch, tmp_path):
+    staging = tmp_path / updater.STAGING_DIR_NAME
+    staging.mkdir()
+    (staging / updater.APP_EXE_NAME).write_bytes(b"MZ")
+    helper = tmp_path / "update_helper.exe"
+    helper.write_bytes(b"MZ")
+
+    def boom(args, **kwargs):
+        raise OSError("cannot spawn")
+    monkeypatch.setattr(updater.subprocess, "Popen", boom)
+    with pytest.raises(updater.UpdateError):
+        updater.apply_staged_update(install_dir=tmp_path, helper_path=helper)
+    # A leftover manifest would make the next helper run act on a stale plan.
     assert not (tmp_path / updater.MANIFEST_NAME).exists()
 
 
@@ -259,6 +290,47 @@ def test_run_update_helper_swaps_and_restarts(tmp_path, monkeypatch):
     assert not staging.exists()
     assert not manifest_path.exists()
     assert launched
+
+
+def test_run_update_helper_waits_for_parent_before_moving(tmp_path, monkeypatch):
+    """The app may still be shutting down; the helper must not move locked files."""
+    install = tmp_path / "install"
+    staging = tmp_path / "staging"
+    install.mkdir()
+    staging.mkdir()
+    (install / updater.APP_EXE_NAME).write_bytes(b"OLD")
+    (staging / updater.APP_EXE_NAME).write_bytes(b"NEW")
+    manifest_path = tmp_path / updater.MANIFEST_NAME
+    manifest_path.write_text(json.dumps({
+        "install_dir": str(install), "staging_dir": str(staging),
+        "backup_dir": str(tmp_path / updater.BACKUP_DIR_NAME), "exe_name": updater.APP_EXE_NAME,
+        "parent_pid": 4242,
+    }), encoding="utf-8")
+    waited = []
+    monkeypatch.setattr(updater, "_wait_for_process_exit", lambda pid, timeout_ms=60000: waited.append(pid) or True)
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda args, **kw: None)
+    assert updater.run_update_helper(tmp_path) == 0
+    assert waited == [4242]
+
+
+def test_run_update_helper_aborts_when_parent_never_exits(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    staging = tmp_path / "staging"
+    install.mkdir()
+    staging.mkdir()
+    (install / updater.APP_EXE_NAME).write_bytes(b"OLD")
+    (staging / updater.APP_EXE_NAME).write_bytes(b"NEW")
+    manifest_path = tmp_path / updater.MANIFEST_NAME
+    manifest_path.write_text(json.dumps({
+        "install_dir": str(install), "staging_dir": str(staging),
+        "backup_dir": str(tmp_path / updater.BACKUP_DIR_NAME), "exe_name": updater.APP_EXE_NAME,
+        "parent_pid": 4242,
+    }), encoding="utf-8")
+    monkeypatch.setattr(updater, "_wait_for_process_exit", lambda pid, timeout_ms=60000: False)
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda args, **kw: None)
+    assert updater.run_update_helper(tmp_path) == 6
+    # Nothing moved: the old install is still intact for the next attempt.
+    assert (install / updater.APP_EXE_NAME).read_bytes() == b"OLD"
 
 
 def test_run_update_helper_rolls_back_when_staging_broken(tmp_path, monkeypatch):

@@ -67,7 +67,9 @@ const toast = ref<Message | string>('')
 const toastError = ref(false)
 let toastTimer: number | undefined
 let pollTimer: number | undefined
-let trackingState = false
+// Which operation is driving the progress poll. Analysis runs on the home page
+// and updates run on the settings page, so the poller cannot be page-scoped.
+let trackingState: 'analysis' | 'update' | null = null
 let progressRevision = -1
 let polling = false
 
@@ -113,11 +115,11 @@ async function startUpdateDownload() {
   if (updateBusy.value || updateRunning.value) return
   updateBusy.value = true
   updateProgress.value = 0
-  trackingState = true
+  trackingState = 'update'
   try {
     await bridge()!.download_update()
   } catch (error) {
-    trackingState = false
+    trackingState = null
     notify(errorMessage(error), true)
   } finally { updateBusy.value = false }
 }
@@ -167,7 +169,7 @@ function applyState(next: UiState) {
   if (next.update_info) updateInfo.value = next.update_info
   locale.value = next.resolved_language ?? 'zh-CN'
   if (trackingState && next.revision !== previousRevision && (next.phase === 'idle' || next.phase === 'error')) {
-    trackingState = false
+    trackingState = null
   }
 }
 async function loadState() {
@@ -176,7 +178,7 @@ async function loadState() {
   } catch (error) { notify(errorMessage(error), true) }
 }
 async function pollProgress() {
-  if (!trackingState || page.value !== 'home' || polling || !bridge()) return
+  if (!trackingState || polling || !bridge()) return
   polling = true
   try {
     const previousRevision = progressRevision
@@ -194,8 +196,8 @@ async function pollProgress() {
         if (match) updateProgress.value = Number(match[1])
         else if (state.phase !== 'updating') updateProgress.value = -1
       }
-      if (state.phase === 'idle' || state.phase === 'error') { trackingState = false; updateProgress.value = -1 }
-      if (state.phase === 'updateReady') { trackingState = false; updateProgress.value = 100 }
+      if (state.phase === 'idle' || state.phase === 'error') { trackingState = null; updateProgress.value = -1 }
+      if (state.phase === 'updateReady') { trackingState = null; updateProgress.value = 100 }
     }
   } catch { /* Retry after the window reappears from capture. */ }
   finally { polling = false }
@@ -351,14 +353,14 @@ async function calibrate() {
   try {
     const result = await bridge()!.start_calibration()
     if (!result.ok) notify(result.error_message ?? m('capture.failed'), true)
-    else { trackingState = true; notify(m('capture.drag')) }
+    else { trackingState = 'analysis'; notify(m('capture.drag')) }
   } catch (error) { notify(errorMessage(error), true) }
 }
 async function analyze() {
   try {
-    trackingState = true
+    trackingState = 'analysis'
     const result = await bridge()!.analyze()
-    if (!result.ok) { trackingState = false; notify(result.error_message ?? m('analysis.failed'), true) }
+    if (!result.ok) { trackingState = null; notify(result.error_message ?? m('analysis.failed'), true) }
     else {
       state.phase = 'capturing'
       state.status_message = m('analysis.capturing')

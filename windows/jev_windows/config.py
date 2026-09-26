@@ -40,7 +40,6 @@ class AppConfig:
     chat_rect: Rect | None = None
     chat_rect_mode: str = "screen"
     allowed_titles: list[str] = field(default_factory=list)
-    auto_analyze: bool = False
     model_profiles: list[ModelProfile] = field(default_factory=lambda: [ModelProfile(
         id="deepseek-default", name="DeepSeek", base_url="https://api.deepseek.com",
         model="deepseek-flash",

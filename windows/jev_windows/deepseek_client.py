@@ -21,7 +21,11 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 
 class DeepSeekError(RuntimeError):
-    pass
+    """Model-service failure. Carries the HTTP status as data, not as prose."""
+
+    def __init__(self, message, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def _endpoint(base_url: str, endpoint: str, protocol: str = DEFAULT_PROTOCOL) -> str:
@@ -97,11 +101,18 @@ def _request_json(
             402: msg("error.model402"),
             429: msg("error.model429"),
         }.get(exc.code, msg("error.modelHttp", status=exc.code, detail=detail))
-        raise DeepSeekError(message) from None
+        # Carry the status code as machine-readable data. Callers must not have to
+        # parse it back out of localized text, which changes with the UI language.
+        raise DeepSeekError(message, exc.code) from None
     except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
         raise DeepSeekError(msg("error.modelConnect", detail=str(exc))) from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise DeepSeekError(msg("error.modelData")) from exc
+
+
+def error_status(error: Exception) -> int | None:
+    """Return the HTTP status carried by a model-service error, if any."""
+    return getattr(error, "status", None)
 
 
 def _post(
@@ -120,7 +131,7 @@ def list_models(base_url: str, key: str = "", timeout: float = 12, protocol: str
     try:
         payload = _request_json(base_url, "models", "", protocol, timeout=timeout)
     except DeepSeekError as exc:
-        if not key or "401" not in str(exc):
+        if not key or error_status(exc) != 401:
             raise
         payload = _request_json(base_url, "models", key, protocol, timeout=timeout)
     try:

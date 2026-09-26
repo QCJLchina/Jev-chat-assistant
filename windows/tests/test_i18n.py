@@ -34,6 +34,42 @@ def test_missing_translation_uses_chinese_and_parameters_are_not_reinterpreted(m
     assert "{status}" in i18n.translate("error.modelHttp", "en", status=500, detail="{status}")
 
 
+def test_message_is_not_a_string_so_it_cannot_be_render_stale():
+    """A str subclass would freeze text in the construction-time locale."""
+    message = i18n.msg("common.save")
+    assert not isinstance(message, str)
+    assert message.message["key"] == "common.save"
+    # Equality is by identity (key + params), not by rendered text.
+    assert message == i18n.msg("common.save")
+    assert message != i18n.msg("common.cancel")
+    assert message != i18n.msg("common.save", count=1)
+
+
+def test_message_renders_in_the_requested_locale_at_presentation_time(monkeypatch):
+    calls = []
+    original = i18n.translate
+    monkeypatch.setattr(i18n, "translate", lambda key, locale="zh-CN", **params: calls.append(locale) or original(key, locale, **params))
+    message = i18n.msg("common.save")
+    # Constructing must not translate; only rendering does.
+    assert calls == []
+    assert i18n.render(i18n.describe(message), "fr") == original("common.save", "fr")
+    assert calls == ["fr"]
+
+
+def test_nested_message_parameters_survive_render(monkeypatch):
+    inner = i18n.msg("common.cancel")
+    outer = i18n.msg("error.unexpected", detail=inner)
+    described = i18n.describe(outer)
+    assert described["params"]["detail"]["key"] == "common.cancel"
+    assert i18n.render(described, "ja") == i18n.translate("error.unexpected", "ja", detail=i18n.msg("common.cancel"))
+
+
+def test_exception_wrapping_a_message_describes_to_that_message():
+    failure = RuntimeError(i18n.msg("error.jev401"))
+    assert i18n.describe(failure)["key"] == "error.jev401"
+    assert i18n.describe(ValueError("plain")) == {"key": "error.unexpected", "params": {"detail": "plain"}}
+
+
 @pytest.mark.parametrize("system,expected", [
     ("zh-CN", "zh-CN"), ("zh-SG", "zh-CN"), ("zh-Hans", "zh-CN"),
     ("zh-Hans-CN", "zh-CN"), ("zh-TW", "en"), ("de-DE", "en"), ("", "en"),
