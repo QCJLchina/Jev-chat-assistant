@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](docs/README.en.md) | [Français](docs/README.fr.md) | [Русский](docs/README.ru.md) | [日本語](docs/README.ja.md)
 
-**版本：v1.2.0**
+**版本：v1.2.1**
 
 本项目是基于开源项目https://github.com/Liyucheng1997/332_lab-jev-chat 的判断题库与分析流程进行的 Windows PC 端再开发。
 
