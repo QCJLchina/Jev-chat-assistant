@@ -33,14 +33,6 @@ def test_start_analysis_requires_a_selected_area(settings):
     assert i18n.describe(caught.value)["key"] == "error.selectFirst"
 
 
-def test_start_analysis_rejects_legacy_wechat_area(settings):
-    settings.chat_rect_mode = "wechat-client"
-    progress = ProgressState("zh-CN")
-    with pytest.raises(ValueError) as caught:
-        analysis.start_analysis(settings, progress, "zh-CN")
-    assert i18n.describe(caught.value)["key"] == "error.legacyArea"
-
-
 def test_start_analysis_requires_a_jev_key(settings, monkeypatch):
     monkeypatch.setattr(analysis, "load_api_key", lambda: "")
     progress = ProgressState("zh-CN")
@@ -61,7 +53,6 @@ def test_missing_key_does_not_mutate_progress_phase(settings, monkeypatch):
 def test_safety_block_lands_in_error_state_without_leaking_chat_text(settings, monkeypatch):
     monkeypatch.setattr(analysis, "load_api_key", lambda: "key")
     monkeypatch.setattr(analysis, "load_model_api_key", lambda _id: "")
-    monkeypatch.setattr(analysis, "find_wechat_window", lambda: None)
     monkeypatch.setattr(
         analysis, "capture_desktop_chat",
         lambda area, capture_frame: _snapshot("请点收款码"),

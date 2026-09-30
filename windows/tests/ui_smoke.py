@@ -21,9 +21,9 @@ def main() -> None:
         page.add_init_script("""
             const current = {
               revision: 0, status: '请先配置 Jev API 并框选聊天区域', phase: 'idle', preview: [],
-              analysis: null, suggestions: [], error: '', version: 'test', chat_rect: null, chat_rect_mode: 'screen',
+              analysis: null, suggestions: [], error: '', version: 'test', chat_rect: null,
               jev_key_configured: false, relationship: '朋友', allowed_titles: [],
-              profiles: [], active_model_id: ''
+              provider_presets: [{"id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com", "default_model": "deepseek-flash", "protocol": "openai-chat", "suggested_models": ["deepseek-v4-pro"], "key_site": "platform.deepseek.com", "local": false, "models": ["deepseek-flash", "deepseek-v4-pro"]}, {"id": "dashscope", "name": "通义千问（阿里云百炼·北京）", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "default_model": "qwen3.8-flash", "protocol": "openai-chat", "suggested_models": ["qwen3.7-plus", "qwen3.8-max"], "key_site": "bailian.console.aliyun.com", "local": false, "models": ["qwen3.8-flash", "qwen3.7-plus", "qwen3.8-max"]}, {"id": "moonshot", "name": "Kimi（月之暗面）", "base_url": "https://api.moonshot.cn/v1", "default_model": "kimi-k3", "protocol": "openai-chat", "suggested_models": [], "key_site": "platform.kimi.com", "local": false, "models": ["kimi-k3"]}, {"id": "zhipu", "name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "default_model": "glm-5.3", "protocol": "openai-chat", "suggested_models": ["glm-5.3-flash"], "key_site": "bigmodel.cn", "local": false, "models": ["glm-5.3", "glm-5.3-flash"]}, {"id": "ark", "name": "豆包（火山方舟）", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "default_model": "doubao-seed-2.0", "protocol": "openai-chat", "suggested_models": [], "key_site": "console.volcengine.com/ark", "local": false, "models": ["doubao-seed-2.0"]}, {"id": "siliconflow", "name": "硅基流动 SiliconFlow", "base_url": "https://api.siliconflow.cn/v1", "default_model": "deepseek-ai/DeepSeek-V3.2", "protocol": "openai-chat", "suggested_models": ["Pro/moonshotai/Kimi-K2.6"], "key_site": "cloud.siliconflow.cn", "local": false, "models": ["deepseek-ai/DeepSeek-V3.2", "Pro/moonshotai/Kimi-K2.6"]}, {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "default_model": "gpt-6.1-sol", "protocol": "openai-responses", "suggested_models": ["gpt-6-luna"], "key_site": "platform.openai.com", "local": false, "models": ["gpt-6.1-sol", "gpt-6-luna"]}, {"id": "anthropic", "name": "Anthropic Claude", "base_url": "https://api.anthropic.com/v1", "default_model": "claude-sonnet-5-5", "protocol": "anthropic", "suggested_models": [], "key_site": "platform.claude.com", "local": false, "models": ["claude-sonnet-5-5"]}, {"id": "gemini", "name": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "default_model": "gemini-3.8-flash", "protocol": "openai-chat", "suggested_models": [], "key_site": "aistudio.google.com", "local": false, "models": ["gemini-3.8-flash"]}, {"id": "openrouter", "name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "default_model": "google/gemini-3.8-flash", "protocol": "openai-chat", "suggested_models": [], "key_site": "openrouter.ai", "local": false, "models": ["google/gemini-3.8-flash"]}, {"id": "ollama", "name": "Ollama（本地）", "base_url": "http://localhost:11434/v1", "default_model": "qwen3", "protocol": "openai-chat", "suggested_models": [], "key_site": "", "local": true, "models": ["qwen3"]}], profiles: [], active_model_id: ''
             };
             window.__bridgeCalls = [];
             window.__fullStateCalls = 0;
@@ -97,12 +97,28 @@ def main() -> None:
         page.screenshot(path=os.path.join(tempfile.gettempdir(), "jev-vue-model-dialog.png"), full_page=True)
 
         protocol = page.locator("#provider")
-        expect(protocol.locator("option")).to_have_count(4)
+        expect(protocol.locator("option")).to_have_count(12)
+        # Every preset fills all required fields without touching the URL input.
+        for preset in page.evaluate("window.pywebview.api.get_state().then(s => s.provider_presets)"):
+            protocol.select_option(preset["id"])
+            expect(page.locator("#provider-name")).to_have_value(preset["name"])
+            expect(page.locator("#model-name")).to_have_value(preset["default_model"])
+            assert page.locator("#base-url").input_value().startswith(preset["base_url"].rstrip("/"))
+        protocol.select_option("ollama")
+        expect(page.get_by_text("本地服务无需 API Key，请先启动服务并选择已安装的模型。")).to_be_visible()
+        page.get_by_role("button", name="测试连接").click()
+        expect(page.get_by_text("连接成功：OK")).to_be_visible()
+        assert page.evaluate("window.__bridgeCalls.filter(c => c[0] === 'test').at(-1)[1].api_key") == ""
+        protocol.select_option("custom")
+        expect(page.locator("#protocol")).to_be_visible()
+        page.locator("#protocol").select_option("openai-responses")
         protocol.select_option("anthropic")
         page.locator("#provider-name").fill("Anthropic 测试")
-        page.locator("#base-url").fill("https://api.anthropic.com/v1/messages")
+        expect(page.locator("#base-url")).to_have_value("https://api.anthropic.com/v1/messages")
+        expect(page.locator("#model-name")).to_have_value("claude-sonnet-5-5")
         page.locator("#model-key").fill("test-secret-not-persisted")
         expect(page.get_by_text("已找到 2 个模型")).to_be_visible(timeout=5000)
+        page.locator("#model-name").fill("")
         page.locator("#model-name").click()
         dropdown = page.locator(".model-dropdown")
         expect(dropdown).to_be_visible()

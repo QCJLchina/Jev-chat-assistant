@@ -8,6 +8,7 @@ from pathlib import Path
 import win32cred
 
 from .models import Rect
+from .providers import default_profiles
 
 
 APP_NAME = "JevChatAssistant"
@@ -38,13 +39,9 @@ class AppConfig:
     relationship: str = "对方是我的朋友；from=me 是我发的，from=other 是对方发的"
     deepseek_model: str = "deepseek-flash"
     chat_rect: Rect | None = None
-    chat_rect_mode: str = "screen"
     allowed_titles: list[str] = field(default_factory=list)
-    model_profiles: list[ModelProfile] = field(default_factory=lambda: [ModelProfile(
-        id="deepseek-default", name="DeepSeek", base_url="https://api.deepseek.com",
-        model="deepseek-flash",
-    )])
-    active_model_id: str = "deepseek-default"
+    model_profiles: list[ModelProfile] = field(default_factory=default_profiles)
+    active_model_id: str = "deepseek"
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -59,10 +56,12 @@ class AppConfig:
             legacy_model_config = "model_profiles" not in raw
             rect = raw.get("chat_rect")
             raw["chat_rect"] = Rect(**rect) if rect else None
-            if "chat_rect_mode" not in raw:
-                raw["chat_rect_mode"] = "wechat-client" if rect else "screen"
-            if raw.get("chat_rect_mode") not in {"screen", "wechat-client"}:
-                raw["chat_rect_mode"] = "screen"
+            # v1.0 stored WeChat client-area relative coordinates. The desktop
+            # selection writes screen coordinates, so that rectangle cannot be
+            # interpreted any more: clear it and let the user pick the area once
+            # again instead of screenshotting the wrong region.
+            if raw.pop("chat_rect_mode", None) == "wechat-client":
+                raw["chat_rect"] = None
             raw["model_profiles"] = [ModelProfile(**item) for item in raw.get("model_profiles", [])]
             known = {field.name for field in cls.__dataclass_fields__.values()}
             config = cls(**{k: v for k, v in raw.items() if k in known})
@@ -135,14 +134,6 @@ def delete_api_key() -> None:
             pass
 
 
-def save_deepseek_api_key(key: str) -> None:
-    key = key.strip()
-    if not key:
-        delete_deepseek_api_key()
-        return
-    save_model_api_key("deepseek-default", key)
-
-
 def save_model_api_key(profile_id: str, key: str) -> None:
     key = key.strip()
     if not key:
@@ -160,36 +151,16 @@ def save_model_api_key(profile_id: str, key: str) -> None:
     )
 
 
-def load_deepseek_api_key() -> str:
-    env_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if env_key:
-        return env_key
-    try:
-        return load_model_api_key("deepseek-default")
-    except Exception:
-        return ""
-
-
-def delete_deepseek_api_key() -> None:
-    delete_model_api_key("deepseek-default")
-    try:
-        win32cred.CredDelete(
-            DEEPSEEK_CREDENTIAL_TARGET, win32cred.CRED_TYPE_GENERIC, 0
-        )
-    except Exception:
-        pass
-
-
 def load_model_api_key(profile_id: str) -> str:
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if env_key and profile_id == "deepseek-default":
+    if env_key and profile_id in {"deepseek", "deepseek-default"}:
         return env_key
     try:
         credential = win32cred.CredRead(
             MODEL_CREDENTIAL_PREFIX + profile_id, win32cred.CRED_TYPE_GENERIC, 0
         )
     except Exception:
-        if profile_id != "deepseek-default":
+        if profile_id not in {"deepseek", "deepseek-default"}:
             return ""
         try:
             credential = win32cred.CredRead(DEEPSEEK_CREDENTIAL_TARGET, win32cred.CRED_TYPE_GENERIC, 0)

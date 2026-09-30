@@ -1,0 +1,13 @@
+{
+  "toolchains": {
+    "project-node": {
+      "java": null,
+      "minimumVersion": null,
+      "preferredVendor": null,
+      "type": "node",
+      "version": null,
+      "wrapper": null
+    }
+  },
+  "version": 1
+}

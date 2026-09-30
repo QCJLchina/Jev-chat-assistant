@@ -42,7 +42,6 @@ try {
         --paths $ProjectRoot `
         --paths $PSScriptRoot `
         --collect-all rapidocr_onnxruntime `
-        --collect-all uiautomation `
         --collect-all webview `
         --add-data "$(Join-Path $FrontendPath 'dist');frontend\dist" `
         --add-data "$(Join-Path $PSScriptRoot 'locales');locales" `

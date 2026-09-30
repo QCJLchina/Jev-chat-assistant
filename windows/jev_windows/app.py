@@ -25,7 +25,8 @@ from .config import (
     save_api_key,
     save_model_api_key,
 )
-from .deepseek_client import SUPPORTED_PROTOCOLS, list_models, test_connection
+from .deepseek_client import SUPPORTED_PROTOCOLS, is_local_base_url, list_models, test_connection
+from .providers import preset_data
 from .i18n import (
     LANGUAGES,
     bridge_errors,
@@ -108,6 +109,7 @@ class DesktopApi:
             "max_tokens": profile.max_tokens,
             "protocol": profile.protocol,
             "key_configured": bool(load_model_api_key(profile.id)),
+            "key_required": not is_local_base_url(profile.base_url),
         }
 
     def get_state(self) -> dict:
@@ -120,12 +122,12 @@ class DesktopApi:
             "language": self.settings.language,
             "resolved_language": self.resolved_language,
             "chat_rect": _rect_data(self.settings.chat_rect),
-            "chat_rect_mode": self.settings.chat_rect_mode,
             "jev_key_configured": bool(load_api_key()),
             "relationship": self.settings.relationship,
             "allowed_titles": self.settings.allowed_titles,
             "profiles": [self._safe_profile(item) for item in self.settings.model_profiles],
             "active_model_id": self.settings.active_model_id,
+            "provider_presets": preset_data(),
         }
 
     @bridge_errors
@@ -136,8 +138,12 @@ class DesktopApi:
         protocol = str(data.get("protocol", "openai-chat"))
         if protocol not in SUPPORTED_PROTOCOLS:
             raise ValueError(msg("error.protocolChoices"))
-        if not key:
-            key = os.environ.get("OPENAI_API_KEY", "").strip()
+        profile_id = str(data.get("profile_id", "")).strip()
+        if not key and profile_id:
+            existing = next((p for p in self.settings.model_profiles if p.id == profile_id), None)
+            # Never forward a saved (or environment-backed) key to another URL/protocol.
+            if existing and existing.base_url.rstrip("/") == base_url.rstrip("/") and existing.protocol == protocol:
+                key = load_model_api_key(profile_id)
         return {"models": list_models(base_url, key, protocol=protocol)}
 
     @bridge_errors
@@ -154,7 +160,7 @@ class DesktopApi:
             if existing and existing.base_url.rstrip("/") == base_url.rstrip("/") and existing.protocol == protocol:
                 key = load_model_api_key(profile_id)
         model = str(data.get("model", "")).strip()
-        if not key or not model:
+        if not model or (not key and not is_local_base_url(base_url)):
             raise ValueError(msg("error.testFields"))
         return {"message": test_connection(base_url, key, model, protocol=protocol)}
 
@@ -250,7 +256,6 @@ class DesktopApi:
             if rect and is_usable_selection(rect):
                 with self._lock:
                     self.settings.chat_rect = rect
-                    self.settings.chat_rect_mode = "screen"
                     self.settings.save()
                 self._set_progress(status=msg("status.areaSaved"), phase="idle")
             elif rect:

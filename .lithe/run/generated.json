@@ -1,0 +1,93 @@
+{
+  "configurations": [
+    {
+      "args": [
+        "run",
+        "build"
+      ],
+      "command": "npm",
+      "confidence": "declared",
+      "cwd": "windows/frontend",
+      "disabled": false,
+      "env": {},
+      "execution": "task",
+      "extensions": {
+        "npm": {
+          "framework": "vue",
+          "manager": "npm",
+          "script": "build"
+        }
+      },
+      "id": "npm.script:windows/frontend/build",
+      "name": "build",
+      "provider": "npm.script",
+      "source": "windows/frontend/package.json",
+      "toolchains": {
+        "runtime": "project-node"
+      }
+    },
+    {
+      "args": [
+        "run",
+        "dev"
+      ],
+      "command": "npm",
+      "confidence": "declared",
+      "cwd": "windows/frontend",
+      "disabled": false,
+      "env": {},
+      "execution": "service",
+      "extensions": {
+        "npm": {
+          "framework": "vue",
+          "manager": "npm",
+          "script": "dev",
+          "server": "vite"
+        }
+      },
+      "id": "npm.script:windows/frontend/dev",
+      "name": "dev",
+      "provider": "npm.script",
+      "source": "windows/frontend/package.json",
+      "toolchains": {
+        "runtime": "project-node"
+      }
+    },
+    {
+      "args": [
+        "run",
+        "preview"
+      ],
+      "command": "npm",
+      "confidence": "declared",
+      "cwd": "windows/frontend",
+      "disabled": false,
+      "env": {},
+      "execution": "service",
+      "extensions": {
+        "npm": {
+          "framework": "vue",
+          "manager": "npm",
+          "script": "preview",
+          "server": "vite"
+        }
+      },
+      "id": "npm.script:windows/frontend/preview",
+      "name": "preview",
+      "provider": "npm.script",
+      "source": "windows/frontend/package.json",
+      "toolchains": {
+        "runtime": "project-node"
+      }
+    }
+  ],
+  "generator": {
+    "fingerprint": "sha256:efb5523273f17010a2283de5fecfa363e58528727719803add6a6aad591f6818",
+    "inputs": {
+      ".venv-windows-py312/Lib/site-packages/playwright/driver/package/package.json": "sha256:f061c58427e47e843e26d201f0a57076c734e57c734ecbbd87d4a23b7a20db9b",
+      "windows/frontend/package-lock.json": "sha256:98ea98d8bc277448147269ce44dc5e9d0dc57f7eb16d9aa37bd48945b211456e",
+      "windows/frontend/package.json": "sha256:d922b2c2782ff1578f112c450e97761863361ed2c0e42cab5f948448695c6d7a"
+    }
+  },
+  "version": 2
+}

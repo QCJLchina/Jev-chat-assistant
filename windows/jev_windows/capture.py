@@ -7,22 +7,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .models import ChatSnapshot, Message, Rect
-from .windows_api import WeChatWindow, client_rect_on_screen, screenshot
+from .windows_api import screenshot
 
 
 _OCR_ENGINE = None
 
-# --- OCR / UIA extraction tuning -------------------------------------------------
+# --- OCR extraction tuning -------------------------------------------------------
 # These values were tuned against real chat layouts. They encode layout
 # assumptions, so keep the intent with the number when adjusting.
-# Longest OCR string accepted; longer runs are usually container text, not a message.
-MAX_TEXT_LENGTH = 500
-# UI Automation tree depth; chat text sits well above this in practice.
-UIA_MAX_DEPTH = 14
-# A single UIA container name is not enough to trust; require this many distinct lines.
-MIN_DISTINCT_UIA_LINES = 2
-# Ignore degenerate boxes produced by rendering artifacts.
-MIN_BOX_SIDE_PX = 1
 # --- Row/message grouping --------------------------------------------------------
 # Two boxes share a row when their vertical centers are within this many pixels...
 ROW_TOLERANCE_MIN_PX = 13
@@ -50,45 +42,8 @@ class TextBox:
     rect: Rect
 
 
-def _absolute_rect(window: WeChatWindow, relative: Rect) -> Rect:
-    client = client_rect_on_screen(window.hwnd)
-    return Rect(
-        client.left + relative.left,
-        client.top + relative.top,
-        client.left + relative.right,
-        client.top + relative.bottom,
-    )
-
-
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
-
-
-def _uia_boxes(window: WeChatWindow, area: Rect) -> list[TextBox]:
-    """Best-effort UI Automation extraction; modern WeChat may expose no text."""
-    try:
-        import uiautomation as auto
-
-        root = auto.ControlFromHandle(window.hwnd)
-        boxes: list[TextBox] = []
-        for control, depth in auto.WalkControl(root, maxDepth=UIA_MAX_DEPTH):
-            if depth == 0:
-                continue
-            name = _clean_text(control.Name or "")
-            if not name or len(name) > MAX_TEXT_LENGTH:
-                continue
-            bound = control.BoundingRectangle
-            rect = Rect(int(bound.left), int(bound.top), int(bound.right), int(bound.bottom))
-            cx = (rect.left + rect.right) // 2
-            cy = (rect.top + rect.bottom) // 2
-            if area.contains(cx, cy) and rect.width > MIN_BOX_SIDE_PX and rect.height > MIN_BOX_SIDE_PX:
-                boxes.append(TextBox(name, rect))
-        # A useful accessibility result has multiple distinct chat lines. A lone
-        # container name is not enough, so let OCR handle it.
-        distinct = {box.text for box in boxes}
-        return boxes if len(distinct) >= MIN_DISTINCT_UIA_LINES else []
-    except Exception:
-        return []
 
 
 def _ocr_boxes(area: Rect, image: object | None = None) -> list[TextBox]:
@@ -174,28 +129,6 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
     return [message for message in messages if message.text][-MAX_MESSAGES:]
 
 
-def capture_chat(window: WeChatWindow, relative_chat_rect: Rect) -> ChatSnapshot:
-    area = _absolute_rect(window, relative_chat_rect)
-    client = client_rect_on_screen(window.hwnd)
-    if (
-        area.left < client.left
-        or area.top < client.top
-        or area.right > client.right
-        or area.bottom > client.bottom
-    ):
-        raise RuntimeError(msg("error.windowChanged"))
-    boxes = _uia_boxes(window, area)
-    if not boxes:
-        boxes = _ocr_boxes(area)
-    messages = _boxes_to_messages(boxes, area)
-    if not messages:
-        raise RuntimeError(msg("error.noChatText"))
-    raw_text = "\n".join(box.text for box in boxes)
-    # Keep the real window title only. A localized fallback is applied at display
-    # time so the allowlist check never matches against translated placeholder text.
-    return ChatSnapshot(window.title or "", messages, raw_text)
-
-
 def capture_desktop_chat(
     screen_rect: Rect,
     capture_frame: Callable[[Rect], tuple[object, str]] | None = None,
@@ -225,5 +158,6 @@ def capture_desktop_chat(
     messages = _boxes_to_messages(boxes, screen_rect)
     if not messages:
         raise RuntimeError(msg("error.noText"))
-    # See capture_chat: keep the raw title, localize at display time.
+    # Keep the raw window title; the localized fallback is applied at display time
+    # so the allowlist check never matches against translated placeholder text.
     return ChatSnapshot(title or "", messages, "\n".join(box.text for box in boxes))

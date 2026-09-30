@@ -1,7 +1,11 @@
+import pytest
+
 from jev_windows import capture, windows_api
 from jev_windows.capture import TextBox, _boxes_to_messages
 from jev_windows.models import Rect
 from jev_windows.workflow import capture_without_overlay
+
+from ocr_fixtures import OCR_SCENARIOS
 
 
 def test_boxes_are_classified_by_side_and_center_rows_ignored():
@@ -45,6 +49,33 @@ def test_wrapped_lines_from_one_bubble_are_merged():
     assert [(item.side, item.text) for item in messages] == [
         ("me", "这个任务最后 需要什么格式")
     ]
+
+
+@pytest.mark.parametrize("scenario", OCR_SCENARIOS, ids=[s["name"] for s in OCR_SCENARIOS])
+def test_frozen_ocr_samples_produce_the_expected_transcript(scenario):
+    """Locked baseline for the grouping/merging constants in capture.py.
+
+    A failure here means the row tolerance, merge gap, edge alignment, center
+    dead zone or message cap changed behaviour for a recorded real layout.
+    """
+    messages = _boxes_to_messages(scenario["boxes"], scenario["area"])
+
+    assert [(item.side, item.text) for item in messages] == scenario["expected"]
+
+
+def test_frozen_ocr_samples_flow_through_the_desktop_capture(monkeypatch):
+    """The same samples must survive the OCR entry point, not just the splitter."""
+    scenario = next(s for s in OCR_SCENARIOS if s["name"] == "centered_timestamp_is_not_a_speaker")
+    monkeypatch.setattr(windows_api, "virtual_screen_rect", lambda: scenario["area"])
+    monkeypatch.setattr(capture, "_ocr_boxes", lambda rect, image: list(scenario["boxes"]))
+
+    snapshot = capture.capture_desktop_chat(
+        scenario["area"], capture_frame=lambda rect: (object(), "标题栏"),
+    )
+
+    assert snapshot.title == "标题栏"
+    assert [(message.side, message.text) for message in snapshot.messages] == scenario["expected"]
+    assert "10:30" in snapshot.raw_text, "raw_text keeps every box for the safety scan"
 
 
 def test_desktop_window_is_restored_before_ocr(monkeypatch):

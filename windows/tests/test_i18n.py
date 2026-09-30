@@ -10,7 +10,7 @@ from jev_windows.models import Rect
 from tools.jev.questions import JUDGE_QUESTIONS
 
 
-LOCALES = ("zh-CN", "en", "fr", "ru", "ja")
+LOCALES = ("zh-CN", "en", "fr", "ru", "ja", "ko")
 
 
 def test_catalogs_have_identical_keys_parameters_and_all_result_choices():
@@ -74,6 +74,7 @@ def test_exception_wrapping_a_message_describes_to_that_message():
     ("zh-CN", "zh-CN"), ("zh-SG", "zh-CN"), ("zh-Hans", "zh-CN"),
     ("zh-Hans-CN", "zh-CN"), ("zh-TW", "en"), ("de-DE", "en"), ("", "en"),
     ("en-GB", "en"), ("fr-CA", "fr"), ("ru-RU", "ru"), ("ja-JP", "ja"),
+    ("ko-KR", "ko"), ("ko-KP", "ko"), ("ko_KR", "ko"), ("KO", "ko"),
 ])
 def test_system_language_mapping(monkeypatch, system, expected):
     monkeypatch.setattr(i18n, "system_language", lambda: system)

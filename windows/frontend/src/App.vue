@@ -10,18 +10,19 @@ import {
   Settings2, ShieldCheck, Sparkles, Trash2, X,
 } from '@lucide/vue'
 
+type ProviderPreset = { id: string; name: string; base_url: string; protocol: string; default_model: string; models: string[]; key_site: string; local: boolean }
 type Profile = {
   id: string; name: string; base_url: string; model: string; max_tokens: number | null
-  key_configured?: boolean; api_key?: string; protocol: string
+  key_configured?: boolean; key_required?: boolean; api_key?: string; protocol: string
 }
 type Suggestion = { text: string; probability: number | null; confidence: number | null; recommended: boolean }
 type UiState = {
   language: Language; resolved_language: Locale; status_message?: Message; error_message?: Message;
   revision: number; status: string; phase: string; preview: { side: string; text: string }[]
   analysis: Record<string, any> | null; suggestions: Suggestion[]; error: string
-  version: string; chat_rect: Record<string, number> | null; chat_rect_mode: string; jev_key_configured: boolean
+  version: string; chat_rect: Record<string, number> | null; jev_key_configured: boolean
   relationship: string; allowed_titles: string[]; profiles: Profile[]; active_model_id: string
-  update_info?: UpdateInfo | null
+  provider_presets?: ProviderPreset[]; update_info?: UpdateInfo | null
 }
 type UpdateInfo = {
   update_available: boolean; latest_version: string; current_version: string;
@@ -51,7 +52,7 @@ const bridge = () => window.pywebview?.api
 const initial: UiState = {
   language: 'system', resolved_language: 'zh-CN', status_message: m('status.initial'),
   revision: 0, status: '', phase: 'idle', preview: [], analysis: null,
-  suggestions: [], error: '', version: appVersion, chat_rect: null, chat_rect_mode: 'screen', jev_key_configured: false,
+  suggestions: [], error: '', version: appVersion, chat_rect: null, jev_key_configured: false,
   relationship: '对方是我的朋友；from=me 是我发的，from=other 是对方发的', allowed_titles: [],
   profiles: [], active_model_id: '',
 }
@@ -74,6 +75,8 @@ let progressRevision = -1
 let polling = false
 
 const draft = reactive<Profile>({ id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
+const draftPreset = ref('custom')
+const selectedPreset = computed(() => state.provider_presets?.find(p => p.id === draftPreset.value))
 const draftKeyVisible = ref(false)
 const modelOptions = ref<string[]>([])
 const modelStatus = ref<Message | string>(m('model.listHint'))
@@ -231,26 +234,37 @@ function onModelNameKeydown(event: KeyboardEvent) {
 function addModel() {
   editingId.value = ''
   resetDraft()
+  chooseProvider(state.provider_presets?.[0]?.id || 'custom')
   showModel.value = true
 }
 function editModel(item: Profile) {
   editingId.value = item.id
   Object.assign(draft, { ...item, api_key: '' })
-  modelOptions.value = []
+  draftPreset.value = matchPreset()?.id || 'custom'
+  modelOptions.value = [...(selectedPreset.value?.models || [])]
   modelStatus.value = item.key_configured ? m('key.savedHint') : m('model.listHintEdit')
   showModel.value = true
 }
+function presetUrl(url: string) { return url.trim().replace(/\/+$/, '').replace(/\/(chat\/completions|responses|messages|models)$/, '') }
+function localUrl(url: string) {
+  try { return ['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(url).hostname) } catch { return false }
+}
+function matchPreset() { return state.provider_presets?.find(p => p.protocol === draft.protocol && presetUrl(p.base_url) === presetUrl(draft.base_url)) }
+function canAutoFetch() { return canFetchModels() && (!!draft.api_key?.trim() || !!(editingId.value && draft.key_configured) || localUrl(draft.base_url)) }
 function chooseProvider(value: string) {
-  if (value === 'deepseek') {
-    draft.protocol = 'openai-chat'
-    draft.name = 'DeepSeek'
-    draft.base_url = 'https://api.deepseek.com'
-    if (!draft.model) draft.model = 'deepseek-flash'
-    return
-  }
-  draft.protocol = value
-  const defaults: Record<string, string> = { 'openai-chat': 'OpenAI Chat', 'openai-responses': 'OpenAI Responses', anthropic: 'Anthropic' }
-  draft.name = defaults[value] || t('model.custom')
+  requestNo++
+  window.clearTimeout(addressTimer)
+  window.clearTimeout(keyTimer)
+  modelBusy.value = false
+  closeModelList()
+  draftPreset.value = value
+  const preset = selectedPreset.value
+  if (!preset) return
+  draft.api_key = ''
+  draft.key_configured = false
+  Object.assign(draft, { protocol: preset.protocol, name: preset.name, base_url: preset.base_url, model: preset.default_model })
+  modelOptions.value = [...preset.models]
+  modelStatus.value = m('model.presetModels')
 }
 function canFetchModels() { return /^https?:\/\//i.test(draft.base_url.trim()) }
 async function refreshModels() {
@@ -267,7 +281,7 @@ async function refreshModels() {
     modelStatus.value = m('model.found', { count: result.models.length })
   } catch (error) {
     if (token !== requestNo || url !== draft.base_url.trim()) return
-    modelOptions.value = []
+    modelOptions.value = [...(selectedPreset.value?.models || [])]
     modelStatus.value = m('model.manual', { detail: readableError(error) })
   } finally {
     if (token === requestNo) modelBusy.value = false
@@ -276,16 +290,17 @@ async function refreshModels() {
 watch(() => draft.base_url, (value, old) => {
   const normalized = normalizeEndpointUrl(value, draft.protocol)
   if (normalized !== value.trim()) { draft.base_url = normalized; return }
-  if (old && value.trim() !== old.trim()) {
+  if (old && presetUrl(value) !== presetUrl(old)) {
+    draftPreset.value = matchPreset()?.id || 'custom'
     draft.api_key = ''
-    modelOptions.value = []
+    modelOptions.value = [...(selectedPreset.value?.models || [])]
     closeModelList()
-    modelStatus.value = m('model.urlChanged')
+    modelStatus.value = selectedPreset.value ? m('model.presetModels') : m('model.urlChanged')
     requestNo++
     modelBusy.value = false
   }
   window.clearTimeout(addressTimer)
-  if (value.trim() && canFetchModels()) addressTimer = window.setTimeout(() => refreshModels(), 700)
+  if (showModel.value && canAutoFetch()) addressTimer = window.setTimeout(() => refreshModels(), 700)
 })
 watch(() => draft.api_key, value => {
   window.clearTimeout(keyTimer)
@@ -293,11 +308,12 @@ watch(() => draft.api_key, value => {
 })
 watch(() => draft.protocol, () => {
   requestNo++
-  modelOptions.value = []
+  modelOptions.value = [...(selectedPreset.value?.models || [])]
   closeModelList()
   const normalized = normalizeEndpointUrl(draft.base_url, draft.protocol)
   if (normalized !== draft.base_url.trim()) draft.base_url = normalized
-  if (canFetchModels()) window.setTimeout(() => refreshModels(), 200)
+  window.clearTimeout(addressTimer)
+  if (showModel.value && canAutoFetch()) addressTimer = window.setTimeout(() => refreshModels(), 700)
 })
 async function testConnection() {
   if (!draft.model.trim()) { notify(m('model.nameRequired'), true); return }
@@ -450,8 +466,8 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
       </section>
 
       <section class="setup-card surface">
-        <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>{{ t('capture.title') }}</h2><p>{{ state.chat_rect_mode === 'wechat-client' ? t('capture.legacy') : state.chat_rect ? t('capture.ready') : t('capture.help') }}</p></div></div>
-        <div class="setup-actions"><span v-if="state.chat_rect && state.chat_rect_mode !== 'wechat-client'" class="ready-chip"><CheckCircle2 :size="15" /> {{ t('capture.calibrated') }}</span><button class="button button-outline" @click="calibrate">{{ state.chat_rect && state.chat_rect_mode !== 'wechat-client' ? t('capture.again') : t('capture.select') }} <ArrowRight :size="15" /></button></div>
+        <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>{{ t('capture.title') }}</h2><p>{{ state.chat_rect ? t('capture.ready') : t('capture.help') }}</p></div></div>
+        <div class="setup-actions"><span v-if="state.chat_rect" class="ready-chip"><CheckCircle2 :size="15" /> {{ t('capture.calibrated') }}</span><button class="button button-outline" @click="calibrate">{{ state.chat_rect ? t('capture.again') : t('capture.select') }} <ArrowRight :size="15" /></button></div>
       </section>
 
       <div class="content-grid">
@@ -516,7 +532,7 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 
           <section class="surface settings-panel models-panel">
             <div class="panel-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>{{ t('model.title') }}</h2><p>{{ t('model.protocolHelp') }}</p></div><span class="count-pill">{{ t('model.count', { count: state.profiles.length }) }}</span></div>
-            <div v-if="state.profiles.length" class="configured-models"><article v-for="profile in state.profiles" :key="profile.id" class="configured-model" :class="{ active: profile.id === state.active_model_id }"><button class="radio-mark" :aria-label="t('common.select', { name: profile.name })" @click="state.active_model_id = profile.id"><Check v-if="profile.id === state.active_model_id" :size="13" /></button><button class="configured-main" @click="state.active_model_id = profile.id"><span class="configured-name">{{ profile.name }}<span v-if="profile.id === state.active_model_id" class="active-tag">{{ t('model.active') }}</span></span><span class="configured-model-id">{{ profile.model }}</span><span class="configured-endpoint">{{ profile.base_url }}</span></button><span class="key-state" :class="{ ready: profile.key_configured || !!profile.api_key }"><KeyRound :size="13" />{{ profile.key_configured || profile.api_key ? t('key.configured') : t('key.missing') }}</span><button class="small-icon" :title="t('common.edit')" @click="editModel(profile)"><Settings2 :size="15" /></button><button class="small-icon delete-icon" :title="t('common.delete')" @click="removeModel(profile)"><Trash2 :size="15" /></button></article></div>
+            <div v-if="state.profiles.length" class="configured-models"><article v-for="profile in state.profiles" :key="profile.id" class="configured-model" :class="{ active: profile.id === state.active_model_id }"><button class="radio-mark" :aria-label="t('common.select', { name: profile.name })" @click="state.active_model_id = profile.id"><Check v-if="profile.id === state.active_model_id" :size="13" /></button><button class="configured-main" @click="state.active_model_id = profile.id"><span class="configured-name">{{ profile.name }}<span v-if="profile.id === state.active_model_id" class="active-tag">{{ t('model.active') }}</span></span><span class="configured-model-id">{{ profile.model }}</span><span class="configured-endpoint">{{ profile.base_url }}</span></button><span class="key-state" :class="{ ready: profile.key_configured || !!profile.api_key }"><KeyRound :size="13" />{{ profile.key_required === false || localUrl(profile.base_url) ? t('key.notRequired') : profile.key_configured || profile.api_key ? t('key.configured') : t('key.missing') }}</span><button class="small-icon" :title="t('common.edit')" @click="editModel(profile)"><Settings2 :size="15" /></button><button class="small-icon delete-icon" :title="t('common.delete')" @click="removeModel(profile)"><Trash2 :size="15" /></button></article></div>
             <div v-else class="models-empty"><Bot :size="20" /><span>{{ t('model.empty') }}</span><small>{{ t('model.emptyHelp') }}</small></div>
             <button class="add-model-button" @click="addModel"><Plus :size="16" />{{ t('model.addConfig') }}</button>
           </section>
@@ -560,7 +576,12 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
       <section class="model-dialog" role="dialog" aria-modal="true" :aria-label="editingId ? t('model.edit') : t('model.add')">
         <header class="dialog-header"><div><div class="dialog-kicker">{{ t('model.eyebrow') }}</div><h2>{{ editingId ? t('model.edit') : t('model.add') }}</h2></div><button class="small-icon" :aria-label="t('common.close')" @click="showModel = false"><X :size="19" /></button></header>
         <div class="dialog-scroll">
-          <label class="field-label" for="provider">{{ t('model.protocol') }}</label><div class="select-wrap provider-select"><select id="provider" :value="draft.name === 'DeepSeek' ? 'deepseek' : draft.protocol" @change="chooseProvider(($event.target as HTMLSelectElement).value)"><option value="openai-chat">openai-chat</option><option value="openai-responses">openai-responses</option><option value="anthropic">anthropic</option><option value="deepseek">DeepSeek（openai-chat）</option></select><ChevronDown :size="16" /></div>
+          <label class="field-label" for="provider">{{ t('model.provider') }}</label><div class="select-wrap provider-select"><select id="provider" :value="draftPreset" @change="chooseProvider(($event.target as HTMLSelectElement).value)"><option v-for="preset in state.provider_presets || []" :key="preset.id" :value="preset.id">{{ preset.name }}</option><option value="custom">{{ t('model.presetCustom') }}</option></select><ChevronDown :size="16" /></div>
+          <p v-if="selectedPreset" class="field-hint">{{ t('model.presetAuto') }}</p>
+          <p v-if="selectedPreset?.key_site" class="field-hint">{{ t('model.keyHint', { site: selectedPreset.key_site }) }}</p>
+          <p v-if="draftPreset === 'ark'" class="field-hint">{{ t('model.arkHint') }}</p>
+          <p v-if="localUrl(draft.base_url)" class="field-hint">{{ t('model.localNoKey') }}</p>
+          <template v-if="draftPreset === 'custom'"><label class="field-label" for="protocol">{{ t('model.protocolField') }}</label><div class="select-wrap"><select id="protocol" v-model="draft.protocol"><option value="openai-chat">openai-chat</option><option value="openai-responses">openai-responses</option><option value="anthropic">anthropic</option></select><ChevronDown :size="16" /></div></template>
           <label class="field-label" for="provider-name">{{ t('model.displayName') }}</label><input id="provider-name" v-model="draft.name" class="plain-input" :placeholder="t('model.displayHint')" />
           <label class="field-label" for="base-url">{{ t('model.url') }}</label><input id="base-url" v-model="draft.base_url" class="plain-input" :placeholder="endpointPlaceholder" autocomplete="url" />
           <label class="field-label" for="model-key">API Key</label><div class="key-entry-row"><div class="input-with-icon key-input"><KeyRound :size="16" /><input id="model-key" v-model="draft.api_key" :type="draftKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="editingId && draft.key_configured ? t('key.savedHint') : t('key.modelPlaceholder')" /><button class="field-icon-button" :aria-label="draftKeyVisible ? t('key.hide') : t('key.show')" @click="draftKeyVisible = !draftKeyVisible"><EyeOff v-if="draftKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div><button class="button button-outline test-button" :disabled="testing || !draft.base_url || !draft.model" @click="testConnection"><LoaderCircle v-if="testing" :size="15" class="spin" /><span v-else>{{ t('model.test') }}</span></button></div>

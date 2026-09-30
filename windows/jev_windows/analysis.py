@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import threading
 
-from .capture import capture_chat, capture_desktop_chat
+from .capture import capture_desktop_chat
 from .config import AppConfig, load_api_key, load_model_api_key
-from .deepseek_client import generate_suggestions
+from .deepseek_client import generate_suggestions, is_local_base_url
 from .i18n import msg, translate
 from .jev_api import judge, recommend_replies
 from .models import Analysis, Rect
 from .safety import assert_safe_chat
 from .state import ProgressState
-from .windows_api import find_wechat_window, screenshot, window_title_at
+from .windows_api import screenshot, window_title_at
 from .workflow import capture_without_overlay
 
 
@@ -52,9 +52,6 @@ class AnalysisService:
 
     def capture(self, area: Rect):
         """Grab the chat text, hiding the assistant so OCR cannot read itself."""
-        window = find_wechat_window() if self.settings.chat_rect_mode == "wechat-client" else None
-        if window is not None:
-            return capture_without_overlay(self._hide, self._show, lambda: capture_chat(window, area))
 
         def capture_frame(region: Rect) -> tuple[object, str]:
             frame = capture_without_overlay(
@@ -96,7 +93,7 @@ class AnalysisService:
         profile = next(
             (p for p in self.settings.model_profiles if p.id == self.settings.active_model_id), None,
         )
-        return profile if profile and load_model_api_key(profile.id) else None
+        return profile if profile and (is_local_base_url(profile.base_url) or load_model_api_key(profile.id)) else None
 
     def _maybe_suggest(self, snapshot, analysis) -> None:
         profile = self._active_profile()
@@ -125,8 +122,6 @@ def start_analysis(settings: AppConfig, progress: ProgressState, locale: str, wi
         raise ValueError(msg("error.busy"))
     if not settings.chat_rect:
         raise ValueError(msg("error.selectFirst"))
-    if settings.chat_rect_mode == "wechat-client":
-        raise ValueError(msg("error.legacyArea"))
     if not load_api_key():
         raise ValueError(msg("error.jevKey"))
     progress.update(

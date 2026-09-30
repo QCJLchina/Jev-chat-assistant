@@ -1,4 +1,12 @@
-"""Offline browser regression for all locales; run against the Vite preview server."""
+"""Offline browser regression for all locales; run against the Vite preview server.
+
+Manual acceptance, not part of CI: the script asserts that choosing "follow the
+system" interface language resolves to English, so it needs a machine whose
+Windows display language is English. It also launches the msedge channel by
+default (override with JEV_BROWSER_CHANNEL=chromium after `playwright install`).
+Install its dependency with windows/requirements-smoke.txt, start
+`npm --prefix windows/frontend run preview`, and point JEV_FRONTEND_URL at it.
+"""
 from __future__ import annotations
 
 import json
@@ -9,7 +17,7 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOGS = {locale: json.loads((ROOT / "windows/locales" / f"{locale}.json").read_text(encoding="utf-8")) for locale in ("zh-CN", "en", "fr", "ru", "ja")}
+CATALOGS = {locale: json.loads((ROOT / "windows/locales" / f"{locale}.json").read_text(encoding="utf-8")) for locale in ("zh-CN", "en", "fr", "ru", "ja", "ko")}
 
 
 def _app_version() -> str:
@@ -23,13 +31,14 @@ REPORTS = ROOT / "_reports" / f"v{APP_VERSION}"
 
 MOCK = r"""
 const initial = {
+  provider_presets: [{"id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com", "default_model": "deepseek-flash", "protocol": "openai-chat", "suggested_models": ["deepseek-v4-pro"], "key_site": "platform.deepseek.com", "local": false, "models": ["deepseek-flash", "deepseek-v4-pro"]}, {"id": "dashscope", "name": "通义千问（阿里云百炼·北京）", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "default_model": "qwen3.8-flash", "protocol": "openai-chat", "suggested_models": ["qwen3.7-plus", "qwen3.8-max"], "key_site": "bailian.console.aliyun.com", "local": false, "models": ["qwen3.8-flash", "qwen3.7-plus", "qwen3.8-max"]}, {"id": "moonshot", "name": "Kimi（月之暗面）", "base_url": "https://api.moonshot.cn/v1", "default_model": "kimi-k3", "protocol": "openai-chat", "suggested_models": [], "key_site": "platform.kimi.com", "local": false, "models": ["kimi-k3"]}, {"id": "zhipu", "name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "default_model": "glm-5.3", "protocol": "openai-chat", "suggested_models": ["glm-5.3-flash"], "key_site": "bigmodel.cn", "local": false, "models": ["glm-5.3", "glm-5.3-flash"]}, {"id": "ark", "name": "豆包（火山方舟）", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "default_model": "doubao-seed-2.0", "protocol": "openai-chat", "suggested_models": [], "key_site": "console.volcengine.com/ark", "local": false, "models": ["doubao-seed-2.0"]}, {"id": "siliconflow", "name": "硅基流动 SiliconFlow", "base_url": "https://api.siliconflow.cn/v1", "default_model": "deepseek-ai/DeepSeek-V3.2", "protocol": "openai-chat", "suggested_models": ["Pro/moonshotai/Kimi-K2.6"], "key_site": "cloud.siliconflow.cn", "local": false, "models": ["deepseek-ai/DeepSeek-V3.2", "Pro/moonshotai/Kimi-K2.6"]}, {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "default_model": "gpt-6.1-sol", "protocol": "openai-responses", "suggested_models": ["gpt-6-luna"], "key_site": "platform.openai.com", "local": false, "models": ["gpt-6.1-sol", "gpt-6-luna"]}, {"id": "anthropic", "name": "Anthropic Claude", "base_url": "https://api.anthropic.com/v1", "default_model": "claude-sonnet-5-5", "protocol": "anthropic", "suggested_models": [], "key_site": "platform.claude.com", "local": false, "models": ["claude-sonnet-5-5"]}, {"id": "gemini", "name": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "default_model": "gemini-3.8-flash", "protocol": "openai-chat", "suggested_models": [], "key_site": "aistudio.google.com", "local": false, "models": ["gemini-3.8-flash"]}, {"id": "openrouter", "name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "default_model": "google/gemini-3.8-flash", "protocol": "openai-chat", "suggested_models": [], "key_site": "openrouter.ai", "local": false, "models": ["google/gemini-3.8-flash"]}, {"id": "ollama", "name": "Ollama（本地）", "base_url": "http://localhost:11434/v1", "default_model": "qwen3", "protocol": "openai-chat", "suggested_models": [], "key_site": "", "local": true, "models": ["qwen3"]}],
   language: 'zh-CN', resolved_language: 'zh-CN', revision: 1, version: '__VERSION__',
   status: '', status_message: {key: 'status.complete'}, error: '', error_message: null,
   phase: 'idle', preview: [{side:'other', text:'原始聊天 / Original conversation'}],
   analysis: {true_intent:'confirm_you_care', need:'care', best_action:'acknowledge',
     danger_level:2.5, should_reply_now:0.6, tension_resolved:0.9, latency_ms:1234},
   suggestions:[{text:'原始回复 / Original reply', probability:0.7, confidence:0.8, recommended:true}],
-  chat_rect:{left:0,top:0,right:800,bottom:600}, chat_rect_mode:'screen',
+  chat_rect:{left:0,top:0,right:800,bottom:600},
   jev_key_configured:true, relationship:'原始关系', allowed_titles:['原始标题'],
   active_model_id:'test-model', profiles:[{id:'test-model',name:'My model',model:'sample-model',
     base_url:'https://example.test/v1',protocol:'openai-chat',max_tokens:400,key_configured:true}]

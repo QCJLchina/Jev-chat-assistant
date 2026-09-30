@@ -4,16 +4,18 @@ import en from '../../locales/en.json'
 import fr from '../../locales/fr.json'
 import ru from '../../locales/ru.json'
 import ja from '../../locales/ja.json'
+import ko from '../../locales/ko.json'
 
-export type Locale = 'zh-CN' | 'en' | 'fr' | 'ru' | 'ja'
+export type Locale = 'zh-CN' | 'en' | 'fr' | 'ru' | 'ja' | 'ko'
 export type Language = Locale | 'system'
 export type Message = { key: string; params?: Record<string, string | number | Message> }
 export type BridgeResult = { ok?: boolean; error?: string; error_message?: Message }
-const catalogs: Record<Locale, Record<string, string>> = { 'zh-CN': zh, en, fr, ru, ja }
+const catalogs: Record<Locale, Record<string, string>> = { 'zh-CN': zh, en, fr, ru, ja, ko }
 export const locale = ref<Locale>('zh-CN')
 export const languages: { value: Locale; label: string }[] = [
   { value: 'zh-CN', label: '简体中文' }, { value: 'en', label: 'English' },
   { value: 'fr', label: 'Français' }, { value: 'ru', label: 'Русский' }, { value: 'ja', label: '日本語' },
+  { value: 'ko', label: '한국어' },
 ]
 export const m = (key: string, params?: Message['params']): Message => ({ key, params })
 export function t(key: string, params: Message['params'] = {}): string {

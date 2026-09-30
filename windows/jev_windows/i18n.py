@@ -8,7 +8,7 @@ import sys
 from functools import lru_cache, wraps
 from pathlib import Path
 
-LANGUAGES = {"system", "zh-CN", "en", "fr", "ru", "ja"}
+LANGUAGES = {"system", "zh-CN", "en", "fr", "ru", "ja", "ko"}
 
 
 def system_language() -> str:
@@ -29,10 +29,10 @@ def resolve_language(language: str) -> str:
     if name in {"zh-cn", "zh-sg", "zh-hans"} or name.startswith("zh-hans-"):
         return "zh-CN"
     base = name.split("-")[0]
-    return base if base in {"en", "fr", "ru", "ja"} else "en"
+    return base if base in LANGUAGES - {"system", "zh-CN"} else "en"
 
 
-@lru_cache(maxsize=5)
+@lru_cache(maxsize=len(LANGUAGES) - 1)
 def catalog(locale: str) -> dict[str, str]:
     root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
     return json.loads((root / "locales" / f"{locale}.json").read_text(encoding="utf-8"))

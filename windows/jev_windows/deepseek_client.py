@@ -28,12 +28,21 @@ class DeepSeekError(RuntimeError):
         self.status = status
 
 
+def is_local_base_url(base_url: str) -> bool:
+    """Only explicit HTTP(S) loopback hosts may omit model-service credentials."""
+    try:
+        parsed = urllib.parse.urlsplit(base_url.strip())
+        return parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+    except ValueError:
+        return False
+
+
 def _endpoint(base_url: str, endpoint: str, protocol: str = DEFAULT_PROTOCOL) -> str:
     value = (base_url or DEFAULT_API_BASE_URL).strip().rstrip("/")
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme not in {"https", "http"} or not parsed.netloc:
         raise DeepSeekError(msg("error.url"))
-    if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+    if parsed.scheme == "http" and not is_local_base_url(value):
         raise DeepSeekError(msg("error.https"))
     if protocol not in SUPPORTED_PROTOCOLS:
         raise DeepSeekError(msg("error.protocol"))

@@ -1,0 +1,4 @@
+{
+  "defaultRunConfiguration": "npm.script:windows/frontend/build",
+  "version": 1
+}
