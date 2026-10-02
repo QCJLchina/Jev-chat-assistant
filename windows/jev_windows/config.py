@@ -9,6 +9,7 @@ import win32cred
 
 from .models import Rect
 from .providers import default_profiles
+from .reply_preferences import validate_preferences
 
 
 APP_NAME = "JevChatAssistant"
@@ -42,6 +43,10 @@ class AppConfig:
     allowed_titles: list[str] = field(default_factory=list)
     model_profiles: list[ModelProfile] = field(default_factory=default_profiles)
     active_model_id: str = "deepseek"
+    reply_preferences: dict[str, str] = field(default_factory=validate_preferences)
+
+    def __post_init__(self) -> None:
+        self.reply_preferences = validate_preferences(self.reply_preferences)
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -80,6 +85,7 @@ class AppConfig:
             return cls()
 
     def save(self) -> None:
+        self.reply_preferences = validate_preferences(self.reply_preferences)
         directory = config_dir()
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "settings.json"

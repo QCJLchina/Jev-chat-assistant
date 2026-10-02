@@ -1,9 +1,11 @@
-name: 持续集成检查
+name: 持续集成与发布
 
 on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*'
   pull_request:
   workflow_dispatch:
 
@@ -11,16 +13,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  test:
+  build-and-release:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
+
+      # 只有标签推送或手动触发才需要版本号；分支推送和 PR 会跳过。
+      - name: 校验版本标签
+        id: version
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $version = (Get-Content 'windows/jev_windows/__init__.py' -Raw | Select-String -Pattern '__version__\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "应用版本格式无效：$version" }
+          if ('${{ github.ref }}' -like 'refs/tags/*') {
+            $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($tagVersion -ne $version) { throw "版本标签 v$tagVersion 与应用版本 $version 不一致，请先更新 windows/jev_windows/__init__.py" }
+          }
+          # 避免 Windows PowerShell 5.1 将 GITHUB_OUTPUT 写成 UTF-16。
+          Add-Content $env:GITHUB_OUTPUT "version=$version" -Encoding ascii
 
       - name: 配置 Node.js
         uses: actions/setup-node@v4
@@ -36,6 +55,7 @@ jobs:
           cache: pip
           cache-dependency-path: windows/requirements-dev.txt
 
+      # 前端只在这里构建一次，发版构建用 -SkipFrontendBuild 复用其产物。
       - name: 安装前端依赖并构建
         shell: pwsh
         run: |
@@ -52,6 +72,7 @@ jobs:
           python -m pip install -r windows/requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { throw '安装 Python 依赖失败' }
 
+      # 测试只跑这一次；后续发版步骤在同一次运行中复用它。
       - name: 运行 Python 测试
         shell: pwsh
         run: |
@@ -89,7 +110,114 @@ jobs:
             $env:JEV_BROWSER_CHANNEL = 'msedge'
             python windows/tests/ui_smoke.py
             if ($LASTEXITCODE -ne 0) { throw '前端界面冒烟测试失败' }
+            python windows/tests/ui_features_smoke.py
+            if ($LASTEXITCODE -ne 0) { throw '新增功能冒烟测试失败' }
+            python windows/tests/ui_localization_smoke.py
+            if ($LASTEXITCODE -ne 0) { throw '六语言界面回归失败' }
           }
           finally {
             if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
           }
+      # ---------- 以下步骤仅在标签推送或手动触发时执行 ----------
+
+      - name: 构建 Windows 程序
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: ./windows/build.ps1 -SkipFrontendBuild
+
+      - name: 打包发布文件
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        shell: pwsh
+        run: |
+          $packageDir = Join-Path $PWD 'dist/Jev对话助手'
+          $exe = Join-Path $packageDir 'Jev对话助手.exe'
+          if (!(Test-Path -LiteralPath $exe -PathType Leaf) -or (Get-Item -LiteralPath $exe).Length -eq 0) {
+            throw "构建产物缺失或为空：$exe"
+          }
+          $assetsDir = Join-Path $PWD 'release-assets'
+          New-Item -ItemType Directory -Force -Path $assetsDir | Out-Null
+          $zip = Join-Path $assetsDir "Jev-Chat-Assistant-v$env:APP_VERSION-windows-x64.zip"
+          Compress-Archive -LiteralPath $packageDir -DestinationPath $zip -Force
+          if (!(Test-Path -LiteralPath $zip -PathType Leaf) -or (Get-Item -LiteralPath $zip).Length -eq 0) {
+            throw "发布压缩包缺失或为空：$zip"
+          }
+          $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $assetName = [System.IO.Path]::GetFileName($zip)
+          Set-Content -LiteralPath (Join-Path $assetsDir "SHA256SUMS.txt") -Value "$digest  $assetName" -Encoding ascii
+          Get-Item -LiteralPath $zip | Select-Object Name, Length
+
+      - name: 上传手动构建产物
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jev对话助手-${{ steps.version.outputs.version }}-windows-x64
+          path: release-assets/*
+          retention-days: 14
+
+      - name: 创建或更新 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        shell: pwsh
+        run: |
+          $zip = "release-assets/Jev-Chat-Assistant-v$env:APP_VERSION-windows-x64.zip"
+          $assetName = [System.IO.Path]::GetFileName($zip)
+
+          # 用 windows/CHANGELOG.md 中对应版本的章节作为 Release 说明。
+          # --generate-notes 在没有 Pull Request 时几乎为空，因此这里自行渲染。
+          $tag = $env:RELEASE_TAG
+          $changelogPath = Join-Path $PWD 'windows/CHANGELOG.md'
+          if (!(Test-Path -LiteralPath $changelogPath -PathType Leaf)) {
+            throw "找不到更新日志：windows/CHANGELOG.md"
+          }
+          $changelog = Get-Content -LiteralPath $changelogPath -Raw -Encoding UTF8
+          $tagPattern = [regex]::Escape($tag)
+          $pattern = '(?ms)^##\s+' + $tagPattern + '\s*\r?\n(.*?)(?=^##\s|\z)'
+          $match = [regex]::Match($changelog, $pattern)
+          if (-not $match.Success) {
+            throw "windows/CHANGELOG.md 中缺少 '$tag' 章节，请先补充更新日志再发版"
+          }
+          $notes = $match.Groups[1].Value.Trim()
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            throw "windows/CHANGELOG.md 的 '$tag' 章节为空，请补充本版本变更说明"
+          }
+          $nl = [Environment]::NewLine
+          $lines = @(
+            $notes,
+            "",
+            "## 下载与安装",
+            "",
+            "1. 从下方 Assets 下载 ``$assetName`` 并解压，保留完整目录结构（``_internal`` 需与主程序同级）",
+            "2. 安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)",
+            "3. 运行 ``Jev对话助手.exe``，首次使用在设置页填写 Jev API Key",
+            ""
+          )
+          $body = [string]::Join($nl, $lines)
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'release-notes.md'), $body, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "Release 说明已生成（$($body.Length) 字符）"
+
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
+              --title "Jev 对话助手 $env:RELEASE_TAG" --notes-file release-notes.md --verify-tag
+            if ($LASTEXITCODE -ne 0) { throw "创建 Release $env:RELEASE_TAG 失败" }
+          }
+          else {
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY `
+              --title "Jev 对话助手 $env:RELEASE_TAG" --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "更新 Release $env:RELEASE_TAG 说明失败" }
+          }
+          gh release upload $env:RELEASE_TAG $zip release-assets/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw "上传发布包到 Release $env:RELEASE_TAG 失败" }
+          $assetsJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" --jq '.assets'
+          if ($LASTEXITCODE -ne 0) { throw "读取 Release $env:RELEASE_TAG 附件失败" }
+          $assets = $assetsJson | ConvertFrom-Json
+          $asset = $assets | Where-Object { $_.name -ceq $assetName } | Select-Object -First 1
+          if (!$asset) { throw "Release 附件未找到：$assetName" }
+          $expectedSize = (Get-Item -LiteralPath $zip).Length
+          if ([long]$asset.size -ne [long]$expectedSize) { throw "Release 附件大小不匹配：$assetName" }
+          Write-Host "已验证 Release 附件：$assetName ($expectedSize bytes)"

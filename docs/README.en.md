@@ -2,11 +2,19 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md)
 
-**Version: v1.2.1**
+**Version: v1.3.0**
 
 This project is a Windows PC re-development based on the judgment question bank and analysis flow of the open-source project https://github.com/Liyucheng1997/332_lab-jev-chat.
 
 The Windows version lets you select a chat area on your desktop, recognizes the visible text with local OCR, and analyzes the conversation through Jev. You can also configure a reply model to generate three candidate replies, which Jev then ranks. Candidate replies are for viewing and copying only — they are never filled in or sent automatically.
+
+[Download v1.3.0 for Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.0)
+
+## What’s new in v1.3.0
+
+- **Paste conversation text**: No area selection needed. Supports `我：` / `对方：` and `me:` / `other:` prefixes, with case-insensitive English prefixes and either colon style. Input is limited to 20,000 characters; analysis uses the last 10 messages, while transaction safety checks cover the full input.
+- **Cancel and retry from checkpoints**: Keep completed judgments and candidates and resume the first unfinished stage; candidates remain copyable if ranking fails. Retries reuse the original task’s frozen configuration, including relationship notes, model, and reply preferences. Start a new analysis to apply changed settings. Cancellation stops later stages and ignores stale results, but an active HTTP request may still finish or time out.
+- **Reply preferences**: Save global length, tone, and reply-language preferences, with temporary session overrides on the home page. Reply language is separate from interface language and supports Simplified Chinese, English, French, Russian, Japanese, and Korean, plus a “follow interface language” option. Chat text and checkpoints stay in memory; no local chat history is saved.
 
 ## Requirements
 
@@ -30,7 +38,7 @@ On first use, enter your Jev API Key on the settings page. To generate candidate
 
 Simplified Chinese, English, Français, Русский, and 日本語 are supported. Pick the "Interface language" on the settings page and it is saved and applied immediately — no restart, and no other unsaved settings are submitted. New users default to the Windows interface language, falling back to English for unsupported system languages; existing users keep Simplified Chinese after upgrading.
 
-This localization covers the interface, prompts, and analysis result labels only. Chat text, user-written relationship notes, and candidate replies stay in their original language; OCR and Chinese reply generation remain unchanged from the previous version.
+This localization covers the interface, prompts, and analysis result labels. Chat text and user-written relationship notes are not translated, and OCR remains unchanged. Candidate replies use the separate reply-language preference: Simplified Chinese, English, French, Russian, Japanese, or Korean, or follow the interface language.
 
 ## Usage
 

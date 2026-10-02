@@ -60,15 +60,18 @@ class UpdateService:
         threading.Thread(target=worker, daemon=True).start()
 
     def download(self) -> None:
-        if self.thread and self.thread.is_alive():
-            raise ValueError(msg("update.inProgress"))
-        info = self.info
-        if not info or not info.get("download_url"):
-            raise ValueError(msg("update.notChecked"))
-        self.cancel = threading.Event()
-        self.progress.update(phase="updating", status=msg("update.downloading"), error=None)
-        self.thread = threading.Thread(target=self._download_worker, args=(info,), daemon=True)
-        self.thread.start()
+        with self.progress.lock:
+            if self.progress.phase() not in {"idle", "error", "updateReady"}:
+                raise ValueError(msg("error.busy"))
+            if self.thread and self.thread.is_alive():
+                raise ValueError(msg("update.inProgress"))
+            info = self.info
+            if not info or not info.get("download_url"):
+                raise ValueError(msg("update.notChecked"))
+            self.cancel = threading.Event()
+            self.progress.update(phase="updating", status=msg("update.downloading"), error=None)
+            self.thread = threading.Thread(target=self._download_worker, args=(info,), daemon=True)
+            self.thread.start()
 
     def _download_worker(self, info: dict) -> None:
         temp_zip = Path(tempfile.gettempdir()) / f"jevchat-update-{info['latest_version']}.zip"

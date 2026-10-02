@@ -5,6 +5,7 @@ from .i18n import msg
 import json
 import socket
 import time
+from threading import Event
 import urllib.error
 import urllib.request
 
@@ -21,10 +22,28 @@ class JevApiError(RuntimeError):
     pass
 
 
-def _post(key: str, body: dict, timeout: float = 20) -> dict:
+class JevCancelledError(JevApiError):
+    """The caller cancelled a Jev request or retry backoff."""
+
+
+def _check_cancelled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise JevCancelledError("Jev request cancelled")
+
+
+def _retry_wait(cancel_event: Event | None) -> None:
+    if cancel_event is None:
+        time.sleep(1)
+    elif cancel_event.wait(1):
+        raise JevCancelledError("Jev request cancelled")
+
+
+def _post(key: str, body: dict, timeout: float = 20, *, cancel_event: Event | None = None) -> dict:
+    _check_cancelled(cancel_event)
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     last_error: Exception | None = None
     for attempt in range(2):
+        _check_cancelled(cancel_event)
         request = urllib.request.Request(
             SYSTEM_ONE_URL,
             data=payload,
@@ -37,12 +56,15 @@ def _post(key: str, body: dict, timeout: float = 20) -> dict:
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                result = json.loads(response.read().decode("utf-8"))
+                _check_cancelled(cancel_event)
+                return result
         except urllib.error.HTTPError as exc:
+            _check_cancelled(cancel_event)
             status = exc.code
             body_text = exc.read().decode("utf-8", errors="replace")[:300]
             if status in (429, 500, 502, 503, 529) and attempt == 0:
-                time.sleep(1)
+                _retry_wait(cancel_event)
                 continue
             readable = {
                 401: msg("error.jev401"),
@@ -52,9 +74,10 @@ def _post(key: str, body: dict, timeout: float = 20) -> dict:
             }.get(status, msg("error.jevHttp", status=status, detail=body_text))
             raise JevApiError(readable) from None
         except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+            _check_cancelled(cancel_event)
             last_error = exc
             if attempt == 0:
-                time.sleep(1)
+                _retry_wait(cancel_event)
                 continue
     raise JevApiError(msg("error.jevConnect", detail=str(last_error)))
 
@@ -79,11 +102,13 @@ def _number(answers: dict, name: str, *keys: str) -> float | None:
     return None
 
 
-def judge(snapshot: ChatSnapshot, relationship: str, key: str) -> Analysis:
+def judge(snapshot: ChatSnapshot, relationship: str, key: str, *, cancel_event: Event | None = None) -> Analysis:
+    _check_cancelled(cancel_event)
     start = time.monotonic()
     response = _post(
         key,
         {"model": JEV_MODEL, "state": _state(snapshot, relationship), "questions": JUDGE_QUESTIONS},
+        **({"cancel_event": cancel_event} if cancel_event is not None else {}),
     )
     answers = response.get("answers") or {}
     return Analysis(
@@ -102,8 +127,11 @@ def recommend_replies(
     relationship: str,
     candidates: list[str],
     key: str,
+    *,
+    cancel_event: Event | None = None,
 ) -> list[dict]:
     """Return Jev's original per-candidate probabilities and selected confidence."""
+    _check_cancelled(cancel_event)
     if len(candidates) != 3:
         raise ValueError("recommend_replies expects exactly three candidates")
     response = _post(
@@ -113,6 +141,7 @@ def recommend_replies(
             "state": _state(snapshot, relationship),
             "questions": build_rank_question(candidates),
         },
+        **({"cancel_event": cancel_event} if cancel_event is not None else {}),
     )
     answer = (response.get("answers") or {}).get("best_reply") or {}
     keys = ["reply_a", "reply_b", "reply_c"]

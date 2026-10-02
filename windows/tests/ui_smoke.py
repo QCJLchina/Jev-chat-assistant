@@ -67,6 +67,11 @@ def main() -> None:
               },
               start_calibration: async () => ({ok: true}),
               analyze: async () => {
+                // Match the backend's atomic task reservation before accepting.
+                current.phase = 'capturing';
+                current.status = '正在读取聊天区域';
+                current.task_id = 'smoke-analysis';
+                window.__progressRevision++;
                 setTimeout(() => {
                   current.phase = 'recognizing';
                   current.status = '正在识别文字';

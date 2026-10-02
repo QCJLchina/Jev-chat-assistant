@@ -23,6 +23,10 @@ class ProgressState:
             "analysis": None,
             "suggestions": [],
             "error": "",
+            "task_id": None,
+            "input_source": None,
+            "failed_stage": None,
+            "retryable_stages": [],
         }
         self._state["status_message"] = describe(self._state["status"])
         self._state["error_message"] = None

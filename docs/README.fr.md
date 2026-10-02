@@ -2,11 +2,19 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md)
 
-**Version : v1.2.1**
+**Version : v1.3.0**
 
 Ce projet est un réaménagement pour Windows PC basé sur la banque de questions de jugement et le flux d'analyse du projet open source https://github.com/Liyucheng1997/332_lab-jev-chat.
 
 La version Windows permet de sélectionner une zone de conversation sur le bureau, de reconnaître le texte visible via l'OCR local, puis d'analyser la conversation avec Jev. Vous pouvez aussi configurer un modèle de réponse pour générer trois réponses candidates, que Jev classe ensuite. Les réponses candidates sont uniquement destinées à la consultation et à la copie — elles ne sont jamais remplies ni envoyées automatiquement.
+
+[Télécharger v1.3.0 pour Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.0)
+
+## Nouveautés de v1.3.0
+
+- **Coller le texte d’une conversation** : aucune sélection de zone nécessaire. Les préfixes `我：` / `对方：` et `me:` / `other:` sont pris en charge ; les préfixes anglais sont insensibles à la casse et les deux formes de deux-points sont acceptées. La saisie est limitée à 20 000 caractères ; l’analyse utilise les 10 derniers messages, mais les contrôles de sécurité des transactions portent sur la saisie complète.
+- **Annuler et reprendre aux étapes sauvegardées** : les évaluations et réponses candidates déjà obtenues sont conservées ; la reprise commence à la première étape inachevée. Les candidates restent copiables si le classement échoue. Une nouvelle tentative réutilise la configuration figée de la tâche initiale, notamment les notes de relation, le modèle et les préférences de réponse. Relancez une analyse pour appliquer de nouveaux réglages. L’annulation arrête les étapes suivantes et ignore les résultats périmés, mais une requête HTTP en cours peut encore se terminer ou expirer.
+- **Préférences de réponse** : enregistrez des préférences globales de longueur, de ton et de langue, avec des ajustements temporaires pour la session sur la page d’accueil. La langue des réponses est indépendante de celle de l’interface : chinois simplifié, anglais, français, russe, japonais et coréen, ou suivi de la langue de l’interface. Le texte des conversations et les résultats des étapes restent en mémoire ; aucun historique local des conversations n’est enregistré.
 
 ## Prérequis
 
@@ -30,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 
 Chinois simplifié, English, Français, Русский et 日本語 sont pris en charge. Sélectionnez la « Langue de l'interface » dans la page de paramètres : elle est enregistrée et appliquée immédiatement, sans redémarrage et sans soumettre les autres paramètres non enregistrés. Les nouveaux utilisateurs suivent par défaut la langue d'interface de Windows, avec repli sur l'anglais pour les langues système non prises en charge ; les utilisateurs existants conservent le chinois simplifié après la mise à niveau.
 
-Cette localisation couvre uniquement l'interface, les messages et les libellés des résultats d'analyse. Le texte des conversations, les notes de relation saisies par l'utilisateur et les réponses candidates restent dans leur langue d'origine ; l'OCR et la génération de réponses en chinois restent inchangés.
+Cette localisation couvre l'interface, les messages et les libellés des résultats d'analyse. Le texte des conversations et les notes de relation saisies par l'utilisateur ne sont pas traduits, et l'OCR reste inchangé. Les réponses candidates suivent une préférence de langue distincte : chinois simplifié, anglais, français, russe, japonais ou coréen, ou la langue de l’interface.
 
 ## Utilisation
 

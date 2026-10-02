@@ -13,7 +13,8 @@ from pathlib import Path
 import webview
 
 from . import __version__
-from .analysis import start_analysis
+from .task_controller import AnalysisController
+from .reply_preferences import validate_preferences
 from .calibration import is_usable_selection, select_region
 from .config import (
     AppConfig,
@@ -60,6 +61,7 @@ class DesktopApi:
         self._lock = threading.RLock()
         self.progress = ProgressState(self.resolved_language)
         self.updates = UpdateService(self.progress)
+        self._analysis = AnalysisController(self.progress)
 
     # ------------------------------------------------------------------
     # Progress plumbing
@@ -112,9 +114,11 @@ class DesktopApi:
             "key_required": not is_local_base_url(profile.base_url),
         }
 
+    @settings_lock
     def get_state(self) -> dict:
-        state = self._render_state()
-        revision = self.progress.revision()
+        with self.progress.lock:
+            state = self._render_state()
+            revision = self.progress.revision()
         return {
             **state,
             "revision": revision,
@@ -124,6 +128,7 @@ class DesktopApi:
             "chat_rect": _rect_data(self.settings.chat_rect),
             "jev_key_configured": bool(load_api_key()),
             "relationship": self.settings.relationship,
+            "reply_preferences": self.settings.reply_preferences,
             "allowed_titles": self.settings.allowed_titles,
             "profiles": [self._safe_profile(item) for item in self.settings.model_profiles],
             "active_model_id": self.settings.active_model_id,
@@ -220,6 +225,7 @@ class DesktopApi:
         if profiles:
             active = next((p for p in profiles if p.id == active_id), profiles[0])
             self.settings.deepseek_model = active.model
+        self.settings.reply_preferences = validate_preferences(data.get("reply_preferences", self.settings.reply_preferences))
         self.settings.relationship = str(data.get("relationship", self.settings.relationship)).strip()
         titles = data.get("allowed_titles", [])
         if isinstance(titles, str):
@@ -236,9 +242,16 @@ class DesktopApi:
     def start_calibration(self) -> dict:
         # Raises if no virtual screen is available; surfaced by @bridge_errors.
         client = virtual_screen_rect()
-        self._set_progress(phase="calibrating", status=msg("status.calibrating"))
+        with self.progress.lock:
+            if self.progress.phase() not in {"idle", "error"}:
+                raise ValueError(msg("error.busy"))
+            self._set_progress(phase="calibrating", status=msg("status.calibrating"))
 
         def overlay() -> None:
+            with self._analysis.capture_lock:
+                run_overlay()
+
+        def run_overlay() -> None:
             # hide/show must not run on the main thread while a js_api call is
             # in flight: pywebview marshals them back onto the UI thread, which
             # is currently blocked executing this very bridge call -> deadlock.
@@ -274,12 +287,27 @@ class DesktopApi:
     # ------------------------------------------------------------------
 
     @bridge_errors
-    def analyze(self) -> dict:
-        try:
-            start_analysis(self.settings, self.progress, self.resolved_language, self.window)
-        except ValueError as exc:
-            return {"ok": False, "error": exc.args[0]}
-        return {"ok": True}
+    @settings_lock
+    def analyze(self, preferences: dict | None = None) -> dict:
+        return self._analysis.start(self.settings, self.resolved_language, self.window, preferences=preferences)
+
+    @bridge_errors
+    @settings_lock
+    def analyze_text(self, payload: str | dict) -> dict:
+        data = json.loads(payload) if isinstance(payload, str) else payload
+        if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+            raise ValueError(msg("feature.emptyText"))
+        return self._analysis.start(self.settings, self.resolved_language, self.window,
+                                   text=data.get("text", ""), preferences=data.get("preferences"))
+
+    @bridge_errors
+    def cancel_analysis(self, task_id: str) -> dict:
+        return self._analysis.cancel(task_id)
+
+    @bridge_errors
+    @settings_lock
+    def retry_analysis(self, task_id: str, stage: str) -> dict:
+        return self._analysis.retry(task_id, stage, self.window, self.settings.chat_rect)
 
     # ------------------------------------------------------------------
     # Window and clipboard
@@ -372,7 +400,6 @@ def main() -> None:
     window = webview.create_window(
         translate("app.title", api.resolved_language, version=__version__),
         frontend.as_uri(),
-        js_api=api,
         width=980,
         height=760,
         min_size=(760, 620),
@@ -380,6 +407,10 @@ def main() -> None:
         on_top=True,
     )
     api.window = window
+    # Export only the supported bridge methods; do not traverse task caches or
+    # native COM objects when pywebview generates its JavaScript API.
+    window.expose(*(getattr(api, name) for name in vars(DesktopApi)
+                    if not name.startswith("_") and callable(getattr(api, name))))
     api.start_background_check()
     try:
         webview.start(gui="edgechromium", debug=False)

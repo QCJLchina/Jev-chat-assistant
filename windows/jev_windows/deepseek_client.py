@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 
 from .models import Analysis, ChatSnapshot
+from .reply_preferences import build_reply_prompt, resolve_preferences
 
 
 CHAT_URL = "https://api.deepseek.com/chat/completions"
@@ -241,6 +242,10 @@ def generate_suggestions(
     base_url: str = DEFAULT_API_BASE_URL,
     max_tokens: int | None = None,
     protocol: str = DEFAULT_PROTOCOL,
+    *,
+    preferences: dict[str, str] | None = None,
+    interface_language: str = "zh-CN",
+    cancel_event=None,
 ) -> list[str]:
     if protocol not in SUPPORTED_PROTOCOLS:
         raise DeepSeekError(msg("error.protocol"))
@@ -253,13 +258,14 @@ def generate_suggestions(
         "should_reply_probability": analysis.should_reply_now,
         "tension_resolved_probability": analysis.tension_resolved,
     }
-    system = (
-        "你是谨慎的中文聊天回复助手。Jev 已经完成结构化判断，你只负责据此起草回复。"
-        "给出恰好三条简短、自然、彼此不同的建议，不编造事实、记忆、承诺或时间。"
-        "不要替用户发送。只输出 JSON：{\"replies\":[\"...\",\"...\",\"...\"]}。"
-    )
+    resolved = resolve_preferences(preferences, interface_language)
+    system = build_reply_prompt(resolved)
     user = f"关系：{relationship}\nJev判断：{json.dumps(judgment, ensure_ascii=False)}\n对话：\n{transcript}"
-    body = _message_body(protocol, model or DEFAULT_MODEL, system, user, max_tokens or 400)
+    token_limit = max_tokens if max_tokens is not None else (1200 if resolved["length"] == "detailed" else 400)
+    body = _message_body(protocol, model or DEFAULT_MODEL, system, user, token_limit)
+    if cancel_event is not None and cancel_event.is_set():
+        from .jev_api import JevCancelledError
+        raise JevCancelledError("Reply request cancelled")
     response = _call_model(base_url, key, protocol, body, 35)
     try:
         replies = _parse_suggestions(_response_text(response, protocol))

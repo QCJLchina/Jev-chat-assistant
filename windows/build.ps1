@@ -1,17 +1,29 @@
-﻿$ErrorActionPreference = "Stop"
+﻿param(
+    [switch]$SkipFrontendBuild
+)
+
+$ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvPath = Join-Path $ProjectRoot ".venv-windows-py312"
 $PythonExe = Join-Path $VenvPath "Scripts\python.exe"
 $FrontendPath = Join-Path $PSScriptRoot "frontend"
+$FrontendDist = Join-Path $FrontendPath "dist"
 $NpmCache = Join-Path $ProjectRoot ".npm-cache"
 
-if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
-    throw "未找到 Node.js/npm，请先安装 Node.js 20 或更高版本。"
+if ($SkipFrontendBuild) {
+    if (-not (Test-Path -LiteralPath (Join-Path $FrontendDist 'index.html') -PathType Leaf)) {
+        throw "指定了 -SkipFrontendBuild，但 windows/frontend/dist 不存在或不完整，请先构建前端或去掉该开关。"
+    }
 }
-& npm.cmd ci --prefix $FrontendPath --cache $NpmCache --no-audit --no-fund
-if ($LASTEXITCODE -ne 0) { throw "Vue 前端依赖安装失败。" }
-& npm.cmd --prefix $FrontendPath run build
-if ($LASTEXITCODE -ne 0) { throw "Vue 前端构建失败。" }
+else {
+    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+        throw "未找到 Node.js/npm，请先安装 Node.js 20 或更高版本。"
+    }
+    & npm.cmd ci --prefix $FrontendPath --cache $NpmCache --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "Vue 前端依赖安装失败。" }
+    & npm.cmd --prefix $FrontendPath run build
+    if ($LASTEXITCODE -ne 0) { throw "Vue 前端构建失败。" }
+}
 
 if (-not (Test-Path $PythonExe)) {
     $PythonVersion = & python --version 2>&1

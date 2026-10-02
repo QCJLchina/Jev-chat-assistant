@@ -3,6 +3,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { checked, display, errorMessage, languages, locale, m, t } from './i18n'
 import type { BridgeResult, Language, Locale, Message } from './i18n'
 import { version as appVersion } from '../package.json'
+import ReplyPreferencesFields from './ReplyPreferences.vue'
+import { defaultReplyPreferences } from './replyPreferences'
+import type { ReplyPreferences } from './replyPreferences'
 import {
   ArrowLeft, ArrowRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight,
   CircleHelp, Copy, Cpu, Download, Eye, EyeOff, KeyRound, LoaderCircle,
@@ -16,6 +19,8 @@ type Profile = {
   key_configured?: boolean; key_required?: boolean; api_key?: string; protocol: string
 }
 type Suggestion = { text: string; probability: number | null; confidence: number | null; recommended: boolean }
+type RetryStage = 'capture' | 'judge' | 'generate' | 'rank'
+type AnalysisResult = BridgeResult & { task_id?: string }
 type UiState = {
   language: Language; resolved_language: Locale; status_message?: Message; error_message?: Message;
   revision: number; status: string; phase: string; preview: { side: string; text: string }[]
@@ -23,12 +28,14 @@ type UiState = {
   version: string; chat_rect: Record<string, number> | null; jev_key_configured: boolean
   relationship: string; allowed_titles: string[]; profiles: Profile[]; active_model_id: string
   provider_presets?: ProviderPreset[]; update_info?: UpdateInfo | null
+  reply_preferences: ReplyPreferences; task_id: string | null; input_source: 'desktop' | 'text' | null
+  failed_stage: RetryStage | null; retryable_stages: RetryStage[]
 }
 type UpdateInfo = {
   update_available: boolean; latest_version: string; current_version: string;
   download_url: string; size: number; sha256?: string
 }
-type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info'>>
+type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info' | 'task_id' | 'input_source' | 'failed_stage' | 'retryable_stages'>>
 type Bridge = {
   set_language(language: Language): Promise<BridgeResult & { language: Language; resolved_language: Locale }>
   get_state(): Promise<UiState>
@@ -37,7 +44,10 @@ type Bridge = {
   test_model(payload: string): Promise<BridgeResult & { message: string; message_message?: Message }>
   save_settings(payload: string): Promise<UiState & BridgeResult>
   start_calibration(): Promise<BridgeResult>
-  analyze(): Promise<BridgeResult>
+  analyze(preferences?: Partial<ReplyPreferences>): Promise<AnalysisResult>
+  analyze_text(payload: { text: string; preferences: ReplyPreferences }): Promise<AnalysisResult>
+  cancel_analysis(taskId: string): Promise<BridgeResult>
+  retry_analysis(taskId: string, stage: RetryStage): Promise<AnalysisResult>
   set_on_top(value: boolean): Promise<{ ok: boolean }>
   set_active_model(profileId: string): Promise<BridgeResult>
   copy_text(value: string): Promise<BridgeResult>
@@ -55,6 +65,8 @@ const initial: UiState = {
   suggestions: [], error: '', version: appVersion, chat_rect: null, jev_key_configured: false,
   relationship: '对方是我的朋友；from=me 是我发的，from=other 是对方发的', allowed_titles: [],
   profiles: [], active_model_id: '',
+  reply_preferences: { ...defaultReplyPreferences }, task_id: null, input_source: null,
+  failed_stage: null, retryable_stages: [],
 }
 const state = reactive<UiState>({ ...initial })
 const page = ref<'home' | 'settings'>('home')
@@ -63,6 +75,30 @@ const pendingDelete = ref<Profile | null>(null)
 const languageBusy = ref(false)
 const editingId = ref('')
 const busy = ref(false)
+const inputSource = ref<'desktop' | 'text'>('desktop')
+const textInput = ref('')
+const textLimit = 20_000
+const textCount = computed(() => Array.from(textInput.value).length)
+const textTooLong = computed(() => textCount.value > textLimit)
+const analysisBusy = ref(false)
+const cancelBusy = ref(false)
+const calibrationBusy = ref(false)
+const activeModelBusy = ref(false)
+const temporaryEnabled = ref(false)
+const temporaryOpen = ref(false)
+// Session-only overrides survive navigation and subsequent runs, without saving settings.
+const temporaryOverrides = ref<Partial<ReplyPreferences>>({})
+const effectivePreferences = computed<ReplyPreferences>(() => ({ ...state.reply_preferences, ...temporaryOverrides.value }))
+const analysisRunning = computed(() => ['capturing', 'recognizing', 'judging', 'generating', 'ranking'].includes(state.phase))
+const operationsLocked = computed(() => analysisRunning.value || state.phase === 'calibrating' || analysisBusy.value || calibrationBusy.value || cancelBusy.value || activeModelBusy.value || busy.value || languageBusy.value || updateBusy.value || updateChecking.value || updateRunning.value || updateReady.value)
+const canAnalyze = computed(() => !operationsLocked.value && (inputSource.value === 'text'
+  ? !!textInput.value.trim() && !textTooLong.value : true))
+const stageLabels = computed<Record<RetryStage, string>>(() => ({
+  capture: t('feature.stageCapture'), judge: t('feature.stageJudge'),
+  generate: t('feature.stageGenerate'), rank: t('feature.stageRank'),
+}))
+const retryStages = computed(() => (['capture', 'judge', 'generate', 'rank'] as RetryStage[])
+  .filter(stage => state.retryable_stages.includes(stage) && (stage !== 'capture' || state.input_source === 'desktop')))
 const topmost = ref(true)
 const toast = ref<Message | string>('')
 const toastError = ref(false)
@@ -73,6 +109,7 @@ let pollTimer: number | undefined
 let trackingState: 'analysis' | 'update' | null = null
 let progressRevision = -1
 let polling = false
+let progressFlight: Promise<void> | null = null
 
 const draft = reactive<Profile>({ id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
 const draftPreset = ref('custom')
@@ -104,7 +141,7 @@ const updatePercent = computed(() => (updateRunning.value && updateProgress.valu
 const updateStatusText = computed(() => display(state.status_message ?? state.status))
 
 async function checkForUpdates(manual = true) {
-  if (updateChecking.value) return
+  if (operationsLocked.value || !bridge()) return
   updateChecking.value = true
   try {
     const result = await bridge()!.check_for_updates()
@@ -115,7 +152,7 @@ async function checkForUpdates(manual = true) {
   } finally { updateChecking.value = false }
 }
 async function startUpdateDownload() {
-  if (updateBusy.value || updateRunning.value) return
+  if (operationsLocked.value) return
   updateBusy.value = true
   updateProgress.value = 0
   trackingState = 'update'
@@ -130,7 +167,7 @@ async function cancelUpdateDownload() {
   try { await bridge()!.cancel_update() } catch { /* state will settle */ }
 }
 async function applyUpdateNow() {
-  if (updateBusy.value) return
+  if (updateBusy.value || analysisRunning.value || analysisBusy.value || busy.value || languageBusy.value || calibrationBusy.value || activeModelBusy.value || updateChecking.value) return
   updateBusy.value = true
   try { await bridge()!.apply_update() } catch (error) { notify(errorMessage(error), true) }
   finally { updateBusy.value = false }
@@ -164,14 +201,19 @@ function notify(message: Message | string, isError = false) {
 }
 function readableError(error: unknown) { return errorMessage(error) }
 function applyState(next: UiState) {
-  const previousRevision = progressRevision
   progressRevision = next.revision
   Object.assign(state, next)
+  state.reply_preferences = { ...defaultReplyPreferences, ...next.reply_preferences }
+  state.retryable_stages = next.retryable_stages ?? []
+  state.task_id = next.task_id ?? null
+  state.input_source = next.input_source ?? null
+  state.failed_stage = next.failed_stage ?? null
+  if (analysisRunning.value) trackingState = 'analysis'
   state.status_message = next.status_message
   state.error_message = next.error_message
   if (next.update_info) updateInfo.value = next.update_info
   locale.value = next.resolved_language ?? 'zh-CN'
-  if (trackingState && next.revision !== previousRevision && (next.phase === 'idle' || next.phase === 'error')) {
+  if (trackingState && (next.phase === 'idle' || next.phase === 'error' || next.phase === 'updateReady')) {
     trackingState = null
   }
 }
@@ -182,28 +224,49 @@ async function loadState() {
 }
 async function pollProgress() {
   if (!trackingState || polling || !bridge()) return
+  await readProgress(false)
+}
+async function readProgress(force: boolean) {
+  // Forced refreshes and timer polls share one flight, including slow bridges.
+  if (!force && progressFlight) { await progressFlight; return }
+  while (progressFlight) await progressFlight
   polling = true
-  try {
-    const previousRevision = progressRevision
-    const result = await bridge()!.get_progress(previousRevision)
-    if (result.revision !== previousRevision) {
-      progressRevision = result.revision
-      state.revision = result.revision
-      const { revision, ...changes } = result
-      Object.assign(state, changes)
-      if ('status' in changes) state.status_message = changes.status_message
-      if ('error' in changes) state.error_message = changes.error_message
-      if (changes.update_info) updateInfo.value = changes.update_info
-      if (typeof changes.status === 'string') {
-        const match = /(\d{1,3})%/.exec(changes.status)
-        if (match) updateProgress.value = Number(match[1])
-        else if (state.phase !== 'updating') updateProgress.value = -1
-      }
-      if (state.phase === 'idle' || state.phase === 'error') { trackingState = null; updateProgress.value = -1 }
-      if (state.phase === 'updateReady') { trackingState = null; updateProgress.value = 100 }
-    }
-  } catch { /* Retry after the window reappears from capture. */ }
-  finally { polling = false }
+  progressFlight = (async () => {
+    try {
+      const wasCalibrating = state.phase === 'calibrating'
+      applyProgress(await bridge()!.get_progress(force ? -1 : progressRevision))
+      if (wasCalibrating && state.phase === 'idle') await refreshCalibrationRectangle()
+    } catch { /* Retry after the window reappears from capture. */ }
+    finally { polling = false; progressFlight = null }
+  })()
+  await progressFlight
+}
+
+function applyProgress(result: Progress) {
+  // An earlier in-flight poll may complete after a fresh task snapshot.
+  if (result.revision < progressRevision) return
+  progressRevision = result.revision
+  state.revision = result.revision
+  const { revision, ...changes } = result
+  Object.assign(state, changes)
+  if ('status' in changes) state.status_message = changes.status_message
+  if ('error' in changes) state.error_message = changes.error_message
+  if (changes.update_info) updateInfo.value = changes.update_info
+  if (typeof changes.status === 'string') {
+    const match = /(\d{1,3})%/.exec(changes.status)
+    if (match) updateProgress.value = Number(match[1])
+    else if (state.phase !== 'updating') updateProgress.value = -1
+  }
+  if (state.phase === 'idle' || state.phase === 'error') { trackingState = null; updateProgress.value = -1 }
+  if (state.phase === 'updateReady') { trackingState = null; updateProgress.value = 100 }
+}
+async function refreshAnalysisProgress() {
+  // Full progress only: do not overwrite unsaved settings/model edits.
+  await readProgress(true)
+}
+async function refreshCalibrationRectangle() {
+  const next = await bridge()!.get_state()
+  state.chat_rect = next.chat_rect
 }
 function resetDraft() {
   Object.assign(draft, { id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
@@ -347,7 +410,7 @@ function confirmDelete() {
   if (state.active_model_id === item.id) state.active_model_id = state.profiles[0]?.id || ''
 }
 async function saveSettings() {
-  if (busy.value) return
+  if (operationsLocked.value) return
   busy.value = true
   try {
     const next = checked(await bridge()!.save_settings(JSON.stringify({
@@ -356,6 +419,7 @@ async function saveSettings() {
       allowed_titles: state.allowed_titles,
       active_model_id: state.active_model_id,
       profiles: state.profiles,
+      reply_preferences: { ...state.reply_preferences },
     })))
     applyState(next)
     jevKey.value = ''
@@ -366,31 +430,79 @@ async function saveSettings() {
   finally { busy.value = false }
 }
 async function calibrate() {
+  if (operationsLocked.value) return
+  calibrationBusy.value = true
+  const previousPhase = state.phase
+  state.phase = 'calibrating'
   try {
-    const result = await bridge()!.start_calibration()
-    if (!result.ok) notify(result.error_message ?? m('capture.failed'), true)
-    else { trackingState = 'analysis'; notify(m('capture.drag')) }
-  } catch (error) { notify(errorMessage(error), true) }
+    checked(await bridge()!.start_calibration())
+    trackingState = 'analysis'
+    notify(m('capture.drag'))
+    await refreshAnalysisProgress()
+    if (state.phase === 'idle') await refreshCalibrationRectangle()
+  } catch (error) { state.phase = previousPhase; notify(errorMessage(error), true) }
+  finally { calibrationBusy.value = false }
 }
 async function analyze() {
+  if (!canAnalyze.value) return
+  await runAnalysis(() => inputSource.value === 'text'
+    ? bridge()!.analyze_text({ text: textInput.value, preferences: { ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) } })
+    : bridge()!.analyze({ ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }),
+  inputSource.value === 'desktop' ? 'capturing' : 'judging', true)
+}
+async function runAnalysis(start: () => Promise<AnalysisResult>, phase: string, newTask = false) {
+  analysisBusy.value = true
+  const previousPhase = state.phase
+  const previousRevision = progressRevision
+  let accepted = false
+  state.phase = phase
   try {
-    trackingState = 'analysis'
-    const result = await bridge()!.analyze()
-    if (!result.ok) { trackingState = null; notify(result.error_message ?? m('analysis.failed'), true) }
-    else {
-      state.phase = 'capturing'
-      state.status_message = m('analysis.capturing')
-      notify(m('analysis.started'))
+    if (!bridge()) throw m('bridge.unavailable')
+    const result = checked(await start())
+    accepted = true
+    if (progressRevision === previousRevision) {
+      state.task_id = result.task_id ?? (newTask ? null : state.task_id)
+      if (newTask) state.input_source = inputSource.value
+      state.failed_stage = null
+      state.retryable_stages = []
+      state.error = ''
+      state.error_message = undefined
     }
+    trackingState = 'analysis'
+    // Fetch the authoritative task/phase even if the worker finished before polling.
+    await refreshAnalysisProgress()
   } catch (error) { notify(errorMessage(error), true) }
+  finally {
+    if (!accepted && progressRevision === previousRevision) state.phase = previousPhase
+    analysisBusy.value = false
+  }
+}
+async function cancelAnalysis() {
+  if (!state.task_id || !analysisRunning.value || analysisBusy.value || cancelBusy.value) return
+  cancelBusy.value = true
+  try {
+    checked(await bridge()!.cancel_analysis(state.task_id))
+    trackingState = 'analysis'
+    await refreshAnalysisProgress()
+  } catch (error) { notify(errorMessage(error), true) }
+  finally { cancelBusy.value = false }
+}
+async function retryAnalysis(stage: RetryStage) {
+  if (operationsLocked.value || !state.task_id || !retryStages.value.includes(stage)) return
+  const taskId = state.task_id
+  const phases: Record<RetryStage, string> = { capture: 'capturing', judge: 'judging', generate: 'generating', rank: 'ranking' }
+  await runAnalysis(() => bridge()!.retry_analysis(taskId, stage), phases[stage])
 }
 async function toggleTopmost() {
   topmost.value = !topmost.value
   try { await bridge()?.set_on_top(topmost.value) } catch { /* browser preview */ }
 }
 async function selectActiveModel() {
+  if (operationsLocked.value) return
+  activeModelBusy.value = true
   try { if (bridge()) checked(await bridge()!.set_active_model(state.active_model_id)) }
   catch (error) { notify(errorMessage(error), true) }
+  finally { activeModelBusy.value = false }
 }
 async function copyReply(reply: string) {
   try {
@@ -418,6 +530,7 @@ watch([locale, () => state.version], () => {
 
 async function changeLanguage(event: Event) {
   const select = event.target as HTMLSelectElement
+  if (languageBusy.value || busy.value) { select.value = state.language; return }
   const chosen = select.value as Language
   languageBusy.value = true
   try {
@@ -465,23 +578,55 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
         <div class="jev-badge"><ShieldCheck :size="18" /><span>{{ t('home.safety') }}</span></div>
       </section>
 
-      <section class="setup-card surface">
+      <section class="surface input-source-panel">
+        <div class="input-source-toggle" role="group" :aria-label="t('feature.inputSource')">
+          <button class="button" :class="inputSource === 'desktop' ? 'button-primary' : 'button-outline'" :aria-pressed="inputSource === 'desktop'" :disabled="operationsLocked" @click="inputSource = 'desktop'">{{ t('feature.inputDesktop') }}</button>
+          <button class="button" :class="inputSource === 'text' ? 'button-primary' : 'button-outline'" :aria-pressed="inputSource === 'text'" :disabled="operationsLocked" @click="inputSource = 'text'">{{ t('feature.inputText') }}</button>
+        </div>
+        <template v-if="inputSource === 'text'">
+          <label class="field-label" for="analysis-text">{{ t('feature.textLabel') }}</label>
+          <textarea id="analysis-text" v-model="textInput" rows="7" :disabled="operationsLocked" :placeholder="t('feature.textPlaceholder')" :aria-invalid="textTooLong" :aria-describedby="textTooLong ? 'text-input-hint text-input-count text-input-error' : 'text-input-hint text-input-count'"></textarea>
+          <div class="field-hint text-input-meta"><span id="text-input-hint">{{ t('feature.textHint') }}</span><span id="text-input-count">{{ t('feature.textCount', { count: textCount, limit: textLimit }) }}</span></div>
+          <p v-if="textTooLong" id="text-input-error" class="text-input-error" role="alert">{{ t('feature.textTooLong', { count: textCount, limit: textLimit }) }}</p>
+        </template>
+        <div class="temporary-heading">
+          <button class="text-action" :aria-expanded="temporaryOpen" aria-controls="temporary-preferences" @click="temporaryOpen = !temporaryOpen"><ChevronDown :size="15" :class="{ collapsed: !temporaryOpen }" />{{ t('feature.temporaryPreferences') }}</button>
+          <span>{{ temporaryEnabled ? t('feature.temporaryActive') : t('feature.usingDefaults') }}</span>
+        </div>
+        <div v-show="temporaryOpen" id="temporary-preferences">
+          <label class="temporary-enable"><input v-model="temporaryEnabled" type="checkbox" :disabled="operationsLocked" />{{ t('feature.temporaryEnable') }}</label>
+          <ReplyPreferencesFields :model-value="effectivePreferences" id-prefix="temporary" :disabled="operationsLocked || !temporaryEnabled" @update:model-value="temporaryOverrides = $event" />
+          <p class="field-hint">{{ t('feature.temporaryHint') }}</p>
+          <button class="button button-quiet" :disabled="operationsLocked" @click="temporaryOverrides = {}; temporaryEnabled = false">{{ t('feature.resetOverrides') }}</button>
+        </div>
+      </section>
+
+      <section v-if="inputSource === 'desktop'" class="setup-card surface">
         <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>{{ t('capture.title') }}</h2><p>{{ state.chat_rect ? t('capture.ready') : t('capture.help') }}</p></div></div>
-        <div class="setup-actions"><span v-if="state.chat_rect" class="ready-chip"><CheckCircle2 :size="15" /> {{ t('capture.calibrated') }}</span><button class="button button-outline" @click="calibrate">{{ state.chat_rect ? t('capture.again') : t('capture.select') }} <ArrowRight :size="15" /></button></div>
+        <div class="setup-actions"><span v-if="state.chat_rect" class="ready-chip"><CheckCircle2 :size="15" /> {{ t('capture.calibrated') }}</span><button class="button button-outline" :disabled="operationsLocked" @click="calibrate">{{ state.chat_rect ? t('capture.again') : t('capture.select') }} <ArrowRight :size="15" /></button></div>
       </section>
 
       <div class="content-grid">
         <section class="surface analysis-card">
-          <div class="section-heading"><div class="heading-icon blue"><Sparkles :size="17" /></div><div><h2>{{ t('analysis.title') }}</h2><p>{{ t('analysis.help') }}</p></div></div>
+          <div class="section-heading"><div class="heading-icon blue"><Sparkles :size="17" /></div><div><h2>{{ t('analysis.title') }}</h2><p>{{ t(inputSource === 'text' ? 'feature.textAnalysisHelp' : 'analysis.help') }}</p></div></div>
           <div class="status-line" :class="statusTone"><span class="status-dot"><LoaderCircle v-if="state.phase !== 'idle' && state.phase !== 'error'" :size="15" class="spin" /><span v-else></span></span><span>{{ display(state.status_message ?? state.status) }}</span></div>
-          <button class="button button-primary analyze-button" :disabled="state.phase !== 'idle' && state.phase !== 'error'" @click="analyze"><Sparkles :size="17" />{{ state.phase !== 'idle' && state.phase !== 'error' ? t('analysis.busy') : t('analysis.start') }}<ArrowRight v-if="state.phase === 'idle' || state.phase === 'error'" :size="17" /></button>
-          <div class="privacy-note"><LockKeyhole :size="14" />{{ t('analysis.privacy') }}</div>
+          <button class="button button-primary analyze-button" :disabled="!canAnalyze" @click="analyze"><Sparkles :size="17" />{{ analysisRunning || analysisBusy ? t('analysis.busy') : t(inputSource === 'text' ? 'feature.analyzeText' : 'analysis.start') }}<ArrowRight v-if="!analysisRunning && !analysisBusy" :size="17" /></button>
+          <div v-if="state.input_source" class="analysis-task-meta">
+            <span>{{ t('feature.taskSource', { source: state.input_source === 'text' ? t('feature.inputText') : t('feature.inputDesktop') }) }}</span>
+          </div>
+          <button v-if="analysisRunning && state.task_id" class="button button-outline cancel-analysis" :disabled="cancelBusy || analysisBusy" @click="cancelAnalysis"><X :size="15" />{{ cancelBusy ? t('feature.cancelling') : t('feature.cancelAnalysis') }}</button>
+          <div v-if="!analysisRunning && (state.failed_stage || state.error || state.error_message || retryStages.length)" class="analysis-recovery" role="status">
+            <p v-if="state.failed_stage">{{ t('feature.failedStage', { stage: stageLabels[state.failed_stage] ?? state.failed_stage }) }}</p>
+            <p v-if="state.error || state.error_message" class="analysis-error">{{ display(state.error_message ?? state.error) }}</p>
+            <div v-if="state.task_id" class="retry-actions"><button v-for="stage in retryStages" :key="stage" class="button button-outline" :disabled="operationsLocked" @click="retryAnalysis(stage)"><RefreshCw :size="14" />{{ t('feature.retryStage', { stage: stageLabels[stage] }) }}</button></div>
+          </div>
+          <div class="privacy-note"><LockKeyhole :size="14" />{{ t(inputSource === 'text' ? 'feature.textPrivacy' : 'analysis.privacy') }}</div>
         </section>
 
         <section class="surface model-card">
           <div class="section-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>{{ t('model.title') }}</h2><p>{{ t('model.help') }}</p></div></div>
           <label class="field-label" for="active-model">{{ t('model.current') }}</label>
-          <div class="select-wrap"><select id="active-model" v-model="state.active_model_id" :disabled="!state.profiles.length" @change="selectActiveModel"><option value="" disabled>{{ t('model.choose') }}</option><option v-for="profile in state.profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model }}</option></select><ChevronDown :size="16" /></div>
+          <div class="select-wrap"><select id="active-model" v-model="state.active_model_id" :disabled="operationsLocked || !state.profiles.length" @change="selectActiveModel"><option value="" disabled>{{ t('model.choose') }}</option><option v-for="profile in state.profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model }}</option></select><ChevronDown :size="16" /></div>
           <div v-if="activeProfile" class="model-meta"><span class="online-dot"></span><span>{{ activeProfile.name }}</span><span class="meta-separator">/</span><span class="model-id">{{ activeProfile.model }}</span></div>
           <button class="text-action" @click="page = 'settings'"><Settings2 :size="15" />{{ t('model.manage') }} <ArrowRight :size="14" /></button>
         </section>
@@ -524,6 +669,7 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
             </select><ChevronDown :size="16" /></div>
             <p class="field-hint">{{ t('language.hint') }}</p>
           </section>
+        <fieldset class="settings-content settings-fields" :disabled="operationsLocked">
           <section class="surface settings-panel">
             <div class="panel-heading"><div class="heading-icon blue"><ShieldCheck :size="17" /></div><div><h2>{{ t('settings.service') }}</h2><p>{{ t('settings.serviceHelp') }}</p></div><span class="required-tag">{{ t('settings.independent') }}</span></div>
           <label class="field-label" for="jev-key">Jev / TypeSafe API Key</label><div class="input-with-icon"><KeyRound :size="16" /><input id="jev-key" v-model="jevKey" :type="jevKeyVisible ? 'text' : 'password'" autocomplete="new-password" :placeholder="state.jev_key_configured ? t('key.savedHint') : t('key.jevPlaceholder')" /><button class="field-icon-button" :aria-label="jevKeyVisible ? t('key.hide') : t('key.show')" @click="jevKeyVisible = !jevKeyVisible"><EyeOff v-if="jevKeyVisible" :size="16" /><Eye v-else :size="16" /></button></div>
@@ -539,20 +685,24 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 
           <section class="surface settings-panel">
             <div class="panel-heading"><div class="heading-icon amber"><MessageCircle :size="17" /></div><div><h2>{{ t('settings.preferences') }}</h2><p>{{ t('settings.contextHelp') }}</p></div></div>
+            <h3 class="reply-default-heading">{{ t('feature.defaultPreferences') }}</h3>
+            <ReplyPreferencesFields v-model="state.reply_preferences" id-prefix="default" :disabled="operationsLocked" />
+            <p class="field-hint">{{ t('feature.defaultPreferencesHint') }}</p>
             <label class="field-label" for="relationship">{{ t('settings.relationship') }}</label><textarea id="relationship" v-model="state.relationship" rows="3" :placeholder="t('settings.relationshipHint')"></textarea>
             <label class="field-label spaced" for="allowed-titles">{{ t('settings.allowlist') }}</label><input id="allowed-titles" class="plain-input" :value="state.allowed_titles.join('，')" :placeholder="t('settings.allowlistHint')" @input="state.allowed_titles = ($event.target as HTMLInputElement).value.replaceAll(',', '，').split('，').map(item => item.trim()).filter(Boolean)" />
             <div class="field-hint">{{ t('settings.allowlistHelp') }}</div>
           </section>
 
+          </fieldset>
           <section class="surface settings-panel update-panel">
             <div class="panel-heading"><div class="heading-icon green"><RotateCw :size="17" /></div><div><h2>{{ t('update.title') }}</h2><p>{{ t('update.help') }}</p></div><span class="count-pill">v{{ state.version }}</span></div>
             <div class="update-row">
               <span class="update-status">{{ updateStatusText || t('update.idleHint') }}</span>
               <div class="update-actions">
-                <button v-if="!updateReady && !updateRunning" class="button button-outline" :disabled="updateChecking || updateRunning" @click="checkForUpdates()">
+                <button v-if="!updateReady && !updateRunning" class="button button-outline" :disabled="operationsLocked" @click="checkForUpdates()">
                   <LoaderCircle v-if="updateChecking" :size="15" class="spin" /><RefreshCw v-else :size="15" />{{ t('update.check') }}
                 </button>
-                <button v-if="updateReady" class="button button-primary" :disabled="updateBusy" @click="applyUpdateNow">
+                <button v-if="updateReady" class="button button-primary" :disabled="updateBusy || analysisRunning || analysisBusy || busy || languageBusy || calibrationBusy || activeModelBusy || updateChecking" @click="applyUpdateNow">
                   <LoaderCircle v-if="updateBusy" :size="15" class="spin" /><RotateCw v-else :size="15" />{{ t('update.applyRestart') }}
                 </button>
                 <button v-if="updateRunning" class="button button-outline" :disabled="updateBusy" @click="cancelUpdateDownload"><X :size="15" />{{ t('update.cancel') }}</button>
@@ -561,11 +711,11 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
             <div v-if="updatePercent !== null" class="update-progress"><div class="update-progress-fill" :style="{ width: updatePercent + '%' }"></div></div>
             <div v-if="updateInfo?.update_available && !updateRunning && !updateReady" class="update-available-row">
               <span>{{ t('update.availableLong', { version: updateInfo.latest_version }) }}</span>
-              <button class="button button-primary" :disabled="updateBusy" @click="startUpdateDownload"><Download :size="15" />{{ t('update.download') }}</button>
+              <button class="button button-primary" :disabled="operationsLocked" @click="startUpdateDownload"><Download :size="15" />{{ t('update.download') }}</button>
             </div>
             <p class="field-hint">{{ t('update.privacyNote') }}</p>
           </section>
-          <div class="save-bar"><span><LockKeyhole :size="14" />{{ t('settings.storage') }}</span><button class="button button-primary" :disabled="busy || languageBusy" @click="saveSettings"><LoaderCircle v-if="busy" :size="16" class="spin" /><Save v-else :size="16" />{{ busy ? t('settings.saving') : t('settings.save') }}</button></div>
+          <div class="save-bar"><span><LockKeyhole :size="14" />{{ t('settings.storage') }}</span><button class="button button-primary" :disabled="operationsLocked" @click="saveSettings"><LoaderCircle v-if="busy" :size="16" class="spin" /><Save v-else :size="16" />{{ busy ? t('settings.saving') : t('settings.save') }}</button></div>
         </div>
       </div>
     </template>
@@ -618,6 +768,25 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 </template>
 
 <style>
+.settings-fields{min-width:0;margin:0;padding:0;border:0}
+.input-source-panel{padding:17px 19px;margin-bottom:14px}
+.input-source-toggle,.retry-actions{display:flex;flex-wrap:wrap;gap:8px}
+.text-input-meta{gap:12px;align-items:flex-start;line-height:1.6}
+.text-input-meta span:last-child{flex-shrink:0}
+.text-input-error{color:#bc5d55;font-size:12px;line-height:1.6}
+.reply-preference-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.temporary-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
+.temporary-heading .text-action{margin:0}
+.temporary-heading>span{color:#8593a4;font-size:11px}
+.temporary-heading .collapsed{transform:rotate(-90deg)}
+.temporary-enable{display:flex;align-items:center;gap:8px;margin-top:14px;color:#52647b;font-size:12px}
+.reply-default-heading{margin:16px 0 0;color:#52647b;font-size:12px}
+.analysis-task-meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:10px;color:#8593a4;font-size:10px;overflow-wrap:anywhere}
+.cancel-analysis{width:100%;margin-top:10px}
+.analysis-recovery{margin-top:12px;color:#bc5d55;font-size:12px;overflow-wrap:anywhere}
+.analysis-recovery p{margin:0 0 8px;white-space:pre-wrap}
+.retry-actions .button{font-size:11px;padding:8px 10px}
+@media(max-width:760px){.reply-preference-fields{grid-template-columns:1fr}.text-input-meta{flex-direction:column;gap:4px}}
 .update-banner{display:flex;align-items:center;gap:10px;width:100%;margin-bottom:14px;padding:10px 16px;border:1px solid #bcd9ef;border-radius:12px;background:linear-gradient(90deg,#eaf6ff,#f6fbff);color:#1f6fa8;font-size:13px;font-weight:600;cursor:pointer;text-align:left}
 .update-banner:hover{background:#e0f1fd}
 .update-panel .update-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px}
