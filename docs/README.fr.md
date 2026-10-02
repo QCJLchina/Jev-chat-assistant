@@ -1,6 +1,6 @@
 # Assistant de conversation Jev (Windows PC)
 
-[简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md)
+[简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 **Version : v1.3.0**
 
@@ -36,7 +36,7 @@ powershell -ExecutionPolicy Bypass -File .\windows\start.ps1
 
 ## Langues de l'interface
 
-Chinois simplifié, English, Français, Русский et 日本語 sont pris en charge. Sélectionnez la « Langue de l'interface » dans la page de paramètres : elle est enregistrée et appliquée immédiatement, sans redémarrage et sans soumettre les autres paramètres non enregistrés. Les nouveaux utilisateurs suivent par défaut la langue d'interface de Windows, avec repli sur l'anglais pour les langues système non prises en charge ; les utilisateurs existants conservent le chinois simplifié après la mise à niveau.
+Chinois simplifié, English, Français, Русский, 日本語 et 한국어 sont pris en charge. Sélectionnez la « Langue de l'interface » dans la page de paramètres : elle est enregistrée et appliquée immédiatement, sans redémarrage et sans soumettre les autres paramètres non enregistrés. Les nouveaux utilisateurs suivent par défaut la langue d'interface de Windows, avec repli sur l'anglais pour les langues système non prises en charge ; les utilisateurs existants conservent le chinois simplifié après la mise à niveau.
 
 Cette localisation couvre l'interface, les messages et les libellés des résultats d'analyse. Le texte des conversations et les notes de relation saisies par l'utilisateur ne sont pas traduits, et l'OCR reste inchangé. Les réponses candidates suivent une préférence de langue distincte : chinois simplifié, anglais, français, russe, japonais ou coréen, ou la langue de l’interface.
 

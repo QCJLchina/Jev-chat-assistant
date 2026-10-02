@@ -1,6 +1,6 @@
 # Jev 对话助手（Windows PC 版）
 
-[简体中文](README.md) | [English](docs/README.en.md) | [Français](docs/README.fr.md) | [Русский](docs/README.ru.md) | [日本語](docs/README.ja.md)
+[简体中文](README.md) | [English](docs/README.en.md) | [Français](docs/README.fr.md) | [Русский](docs/README.ru.md) | [日本語](docs/README.ja.md) | [한국어](docs/README.ko.md)
 
 **版本：v1.3.0**
 
