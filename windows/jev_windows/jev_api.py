@@ -85,7 +85,9 @@ def _post(key: str, body: dict, timeout: float = 20, *, cancel_event: Event | No
 def _state(snapshot: ChatSnapshot, relationship: str) -> dict:
     # Keep the calibrated question set's historical wire labels.
     messages = [("me" if message.side == "me" else "her", message.text) for message in snapshot.messages]
-    return build_state(messages, relationship)
+    if snapshot.background:
+        relationship = f"{relationship}\n\nBackground (user-provided context, not chat messages):\n{snapshot.background}"
+    return build_state(messages, relationship, message_limit=None)
 
 
 def _choice(answers: dict, name: str) -> str:

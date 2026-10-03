@@ -12,7 +12,7 @@ _PREFIX = re.compile(r"^(我|对方|me|other)\s*[:：]\s*(.*)$", re.IGNORECASE)
 
 
 def parse_text(text: str) -> ChatSnapshot:
-    """Keep the last ten messages; continuations join the preceding message."""
+    """Keep all messages; continuations join the preceding message."""
     if not isinstance(text, str):
         raise ValueError(msg("feature.emptyText"))
     if len(text) > MAX_TEXT_LENGTH:
@@ -38,4 +38,4 @@ def parse_text(text: str) -> ChatSnapshot:
             messages[-1] = Message(previous.side, previous.text + "\n" + line)
     if not messages:
         raise ValueError(msg("feature.emptyText"))
-    return ChatSnapshot(title="", messages=messages[-10:], raw_text=text)
+    return ChatSnapshot(title="", messages=messages, raw_text=text)

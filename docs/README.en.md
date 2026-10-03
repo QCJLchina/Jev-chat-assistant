@@ -2,15 +2,22 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-**Version: v1.3.0**
+**Version: v1.3.1**
 
 This project is a Windows PC re-development based on the judgment question bank and analysis flow of the open-source project https://github.com/Liyucheng1997/332_lab-jev-chat.
 
 The Windows version lets you select a chat area on your desktop, recognizes the visible text with local OCR, and analyzes the conversation through Jev. You can also configure a reply model to generate three candidate replies, which Jev then ranks. Candidate replies are for viewing and copying only — they are never filled in or sent automatically.
 
-[Download v1.3.0 for Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.0)
+[Download v1.3.1 for Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.1)
 
-## What’s new in v1.3.0
+## v1.3.1 new features
+
+- **Full context**: Analyze all messages by default, or explicitly select the last 10, 20, or 50. Prior conversation is prepended to the current messages before selection. Selected message bodies and background notes together must fit within 20,000 characters; reduce the range or shorten the content if needed, without silent truncation. Statistics show total messages, used messages, characters, the selected limit, and omitted messages. Transaction checks cover the complete input, including omitted messages, prior conversation, and background notes.
+- **Prior conversation and background**: Prior text accepts `我：` / `对方：` and `me:` / `other:`. Background provides context rather than a chat message. Supplements stay in memory only, can be cleared manually, and are cleared when switching the bound target window or exiting the app. Contact changes inside the same window cannot be detected automatically; clear supplements yourself before switching conversations.
+- **Follow the window**: New installations default to Follow window. Existing fixed areas retain Fixed screen area mode, even after reselection; choose Follow window before reselecting to enable following. In Follow window mode, moving the window moves the selection. Following across displays with different DPI works only while window geometry remains consistent. A size change exceeding 2 DIP requires reselection. After the target closes or the app restarts, confirm a candidate window before restoring the binding.
+- **Capture on demand**: OCR runs when you click analyze, with no continuous background OCR or background capture of minimized or occluded windows. Restore the window and make the chat area visible first.
+
+## Released v1.3.0 features (historical behavior)
 
 - **Paste conversation text**: No area selection needed. Supports `我：` / `对方：` and `me:` / `other:` prefixes, with case-insensitive English prefixes and either colon style. Input is limited to 20,000 characters; analysis uses the last 10 messages, while transaction safety checks cover the full input.
 - **Cancel and retry from checkpoints**: Keep completed judgments and candidates and resume the first unfinished stage; candidates remain copyable if ranking fails. Retries reuse the original task’s frozen configuration, including relationship notes, model, and reply preferences. Start a new analysis to apply changed settings. Cancellation stops later stages and ignores stale results, but an active HTTP request may still finish or time out.

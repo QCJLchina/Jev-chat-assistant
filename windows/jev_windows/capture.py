@@ -32,8 +32,6 @@ MESSAGE_MERGE_GAP_RATIO = 0.45
 MESSAGE_MERGE_OVERLAP_PX = 2
 # Merged lines must share a left (other) or right (me) edge within this fraction.
 EDGE_ALIGNMENT_RATIO = 0.08
-# Cap how many trailing messages are sent for analysis.
-MAX_MESSAGES = 10
 
 
 @dataclass(frozen=True)
@@ -126,7 +124,7 @@ def _boxes_to_messages(boxes: list[TextBox], area: Rect) -> list[Message]:
                 continue
         messages.append(Message(side, text))
         message_bounds.append(bound)
-    return [message for message in messages if message.text][-MAX_MESSAGES:]
+    return [message for message in messages if message.text]
 
 
 def capture_desktop_chat(

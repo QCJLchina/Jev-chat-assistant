@@ -67,6 +67,7 @@ MOCK_BRIDGE = r"""
   window.__features = {
     snapshot: clone,
     queueFailure: stage => { nextFailure = stage; },
+    selectArea: () => publish({selection_mode: 'screen', chat_rect: {left: 0, top: 0, right: 800, bottom: 600}}),
     finish: label => finish(current.task_id, label),
     // Inject a backend checkpoint and let the real frontend load it.
     fail: (stage, source) => publish({task_id: `checkpoint-${++serial}`,
@@ -82,6 +83,8 @@ MOCK_BRIDGE = r"""
   };
   window.pywebview = {api: {
     get_state: async () => clone(),
+    get_selection_state: async () => ({selection_mode: current.selection_mode ?? (current.chat_rect ? 'screen' : 'window'),
+      selection_binding: current.selection_binding ?? {status: 'none'}, chat_rect: current.chat_rect, selection_revision: 0}),
     get_progress: async known => known === current.revision ? {revision: known} : clone(),
     analyze: async preferences => begin('desktop', preferences ?? null),
     analyze_text: async payload => begin('text', payload),
@@ -165,7 +168,8 @@ def main() -> None:
                 page.locator(f"#temporary-{field}").select_option(value)
             page.locator(".analyze-button").click()
             expect(page.locator(".cancel-analysis")).to_be_visible()
-            assert last_call("analyze_text")["payload"] == {"text": text, "preferences": overrides}
+            assert last_call("analyze_text")["payload"] == {"text": text, "preferences": overrides,
+                "context": {"prior_text": "", "background": "", "message_limit": None}}
             assert page.evaluate("window.__features.snapshot().chat_rect") is None
             assert last_call("start_calibration") is None
             assert page.evaluate("window.__features.snapshot().reply_preferences") == defaults
@@ -193,6 +197,7 @@ def main() -> None:
             expect(page.locator("#analysis-text")).to_have_value(text)
 
             # Check all stage-specific retry buttons and their bridge contracts.
+            page.evaluate("window.__features.selectArea()")
             for stage in ("capture", "judge", "generate", "rank"):
                 button("feature.inputDesktop" if stage == "capture" else "feature.inputText").click()
                 page.evaluate("stage => window.__features.queueFailure(stage)", stage)

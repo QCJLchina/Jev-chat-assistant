@@ -14,6 +14,7 @@ import webview
 
 from . import __version__
 from .task_controller import AnalysisController
+from .window_binding import WindowBindingService
 from .reply_preferences import validate_preferences
 from .calibration import is_usable_selection, select_region
 from .config import (
@@ -61,7 +62,9 @@ class DesktopApi:
         self._lock = threading.RLock()
         self.progress = ProgressState(self.resolved_language)
         self.updates = UpdateService(self.progress)
-        self._analysis = AnalysisController(self.progress)
+        self._binding_service = WindowBindingService()
+        self._selection_revision = 0
+        self._analysis = AnalysisController(self.progress, self._binding_service)
 
     # ------------------------------------------------------------------
     # Progress plumbing
@@ -71,7 +74,10 @@ class DesktopApi:
         self.progress.update(**updates)
 
     def get_progress(self, known_revision: int = -1) -> dict:
-        return self.progress.poll(known_revision)
+        result = self.progress.poll(known_revision)
+        if len(result) > 1:
+            result.update(self.get_selection_state())
+        return result
 
     def _render_state(self) -> dict:
         return self.progress.rendered()
@@ -133,6 +139,7 @@ class DesktopApi:
             "profiles": [self._safe_profile(item) for item in self.settings.model_profiles],
             "active_model_id": self.settings.active_model_id,
             "provider_presets": preset_data(),
+            **self.get_selection_state(),
         }
 
     @bridge_errors
@@ -238,46 +245,106 @@ class DesktopApi:
     # Calibration
     # ------------------------------------------------------------------
 
+    def _ensure_selection_idle(self):
+        if self.progress.phase() not in {"idle", "error"}:
+            raise ValueError(msg("error.busy"))
+
+    @settings_lock
+    def get_selection_state(self) -> dict:
+        binding = (self._binding_service.status(self.settings.window_binding)
+                   if self.settings.selection_mode == "window" else {"status": "none"})
+        return {"selection_mode": self.settings.selection_mode, "selection_binding": binding,
+                "selection_revision": self._selection_revision, "chat_rect": _rect_data(self.settings.chat_rect)}
+
+    def _publish_selection(self):
+        self.progress.update(**self.get_selection_state())
+
     @bridge_errors
-    def start_calibration(self) -> dict:
-        # Raises if no virtual screen is available; surfaced by @bridge_errors.
+    @settings_lock
+    def set_selection_mode(self, mode: str) -> dict:
+        if mode not in {"window", "screen"}:
+            raise ValueError(msg("binding.invalidMode"))
+        with self.progress.lock:
+            self._ensure_selection_idle()
+            if mode != self.settings.selection_mode:
+                candidate = replace(self.settings, selection_mode=mode, chat_rect=None, window_binding=None)
+                candidate.save()
+                self.settings = candidate
+                self._selection_revision += 1
+                self._analysis.invalidate()
+                self._publish_selection()
+        return {"ok": True, **self.get_selection_state()}
+
+    @bridge_errors
+    @settings_lock
+    def get_binding_candidates(self) -> dict:
+        self._ensure_selection_idle()
+        return {"ok": True, "candidates": self._binding_service.candidates(self.settings.window_binding)}
+
+    @bridge_errors
+    @settings_lock
+    def confirm_binding(self, candidate_id: str) -> dict:
+        with self.progress.lock:
+            self._ensure_selection_idle()
+            if self.settings.selection_mode != "window":
+                raise ValueError(msg("binding.invalidMode"))
+            descriptor = self._binding_service.confirm(self.settings.window_binding, candidate_id)
+            candidate = replace(self.settings, window_binding=descriptor)
+            candidate.save()
+            self.settings = candidate
+            self._selection_revision += 1
+            self._analysis.invalidate()
+            self._publish_selection()
+        return {"ok": True, **self.get_selection_state()}
+
+    @bridge_errors
+    def start_calibration(self, mode: str | None = None) -> dict:
+        requested = mode or self.settings.selection_mode
+        if requested not in {"window", "screen"}:
+            raise ValueError(msg("binding.invalidMode"))
         client = virtual_screen_rect()
         with self.progress.lock:
-            if self.progress.phase() not in {"idle", "error"}:
-                raise ValueError(msg("error.busy"))
+            self._ensure_selection_idle()
             self._set_progress(phase="calibrating", status=msg("status.calibrating"))
 
         def overlay() -> None:
             with self._analysis.capture_lock:
-                run_overlay()
+                if self.window:
+                    self.window.hide()
+                try:
+                    select_region(client, self.resolved_language, finish)
+                except Exception as exc:
+                    self._set_progress(phase="error", status=msg("status.overlayFailed", detail=exc), error=exc)
+                    if self.window:
+                        self.window.show()
+                        self.window.restore()
 
-        def run_overlay() -> None:
-            # hide/show must not run on the main thread while a js_api call is
-            # in flight: pywebview marshals them back onto the UI thread, which
-            # is currently blocked executing this very bridge call -> deadlock.
-            if self.window:
-                self.window.hide()
+        def finish(rect: Rect | None) -> None:
             try:
-                select_region(client, self.resolved_language, finish)
+                if rect and is_usable_selection(rect):
+                    descriptor = self._binding_service.bind(rect) if requested == "window" else None
+                    with self._lock:
+                        changed = (requested != self.settings.selection_mode or
+                                   (not self._binding_service.same_target(self.settings.window_binding, descriptor)
+                                    if requested == "window" else rect != self.settings.chat_rect))
+                        candidate = replace(self.settings, selection_mode=requested, chat_rect=rect, window_binding=descriptor)
+                        candidate.save()
+                        self.settings = candidate
+                        if changed:
+                            self._selection_revision += 1
+                            self._analysis.invalidate()
+                        self._set_progress(status=msg("status.areaSaved"), phase="idle", error="")
+                        self._publish_selection()
+                elif rect:
+                    self._set_progress(status=msg("status.areaSmall"), phase="idle")
+                else:
+                    self._set_progress(status=msg("status.cancelled"), phase="idle")
             except Exception as exc:
-                self._set_progress(phase="error", status=msg("status.overlayFailed", detail=exc))
+                self._set_progress(phase="error", status=exc, error=exc)
+            finally:
                 if self.window:
                     self.window.show()
                     self.window.restore()
-
-        def finish(rect: Rect | None) -> None:
-            if rect and is_usable_selection(rect):
-                with self._lock:
-                    self.settings.chat_rect = rect
-                    self.settings.save()
-                self._set_progress(status=msg("status.areaSaved"), phase="idle")
-            elif rect:
-                self._set_progress(status=msg("status.areaSmall"), phase="idle")
-            else:
-                self._set_progress(status=msg("status.cancelled"), phase="idle")
-            if self.window:
-                self.window.show()
-                self.window.restore()
 
         threading.Thread(target=overlay, daemon=True).start()
         return {"ok": True}
@@ -288,8 +355,8 @@ class DesktopApi:
 
     @bridge_errors
     @settings_lock
-    def analyze(self, preferences: dict | None = None) -> dict:
-        return self._analysis.start(self.settings, self.resolved_language, self.window, preferences=preferences)
+    def analyze(self, preferences: dict | None = None, context: dict | None = None) -> dict:
+        return self._analysis.start(self.settings, self.resolved_language, self.window, preferences=preferences, context=context)
 
     @bridge_errors
     @settings_lock
@@ -298,7 +365,7 @@ class DesktopApi:
         if not isinstance(data, dict) or not isinstance(data.get("text"), str):
             raise ValueError(msg("feature.emptyText"))
         return self._analysis.start(self.settings, self.resolved_language, self.window,
-                                   text=data.get("text", ""), preferences=data.get("preferences"))
+                                   text=data.get("text", ""), preferences=data.get("preferences"), context=data.get("context"))
 
     @bridge_errors
     def cancel_analysis(self, task_id: str) -> dict:
@@ -307,7 +374,7 @@ class DesktopApi:
     @bridge_errors
     @settings_lock
     def retry_analysis(self, task_id: str, stage: str) -> dict:
-        return self._analysis.retry(task_id, stage, self.window, self.settings.chat_rect)
+        return self._analysis.retry(task_id, stage, self.window, self.settings.chat_rect, self.settings.window_binding)
 
     # ------------------------------------------------------------------
     # Window and clipboard

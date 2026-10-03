@@ -3,6 +3,9 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { checked, display, errorMessage, languages, locale, m, t } from './i18n'
 import type { BridgeResult, Language, Locale, Message } from './i18n'
 import { version as appVersion } from '../package.json'
+import ContextOptions from './ContextOptions.vue'
+import { contextInputLimit, defaultContext, unicodeLength } from './contextOptions'
+import type { AnalysisContext, BindingCandidate, ContextStats, SelectionBinding, SelectionMode } from './contextOptions'
 import ReplyPreferencesFields from './ReplyPreferences.vue'
 import { defaultReplyPreferences } from './replyPreferences'
 import type { ReplyPreferences } from './replyPreferences'
@@ -25,6 +28,8 @@ type UiState = {
   language: Language; resolved_language: Locale; status_message?: Message; error_message?: Message;
   revision: number; status: string; phase: string; preview: { side: string; text: string }[]
   analysis: Record<string, any> | null; suggestions: Suggestion[]; error: string
+  selection_mode?: SelectionMode; selection_binding?: SelectionBinding; selection_revision?: number
+  context_stats?: ContextStats | null
   version: string; chat_rect: Record<string, number> | null; jev_key_configured: boolean
   relationship: string; allowed_titles: string[]; profiles: Profile[]; active_model_id: string
   provider_presets?: ProviderPreset[]; update_info?: UpdateInfo | null
@@ -35,7 +40,11 @@ type UpdateInfo = {
   update_available: boolean; latest_version: string; current_version: string;
   download_url: string; size: number; sha256?: string
 }
-type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info' | 'task_id' | 'input_source' | 'failed_stage' | 'retryable_stages'>>
+type SelectionState = {
+  selection_mode: SelectionMode; selection_binding: SelectionBinding
+  selection_revision: number; chat_rect: UiState['chat_rect']
+}
+type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info' | 'task_id' | 'input_source' | 'failed_stage' | 'retryable_stages' | 'context_stats' | 'selection_mode' | 'selection_binding' | 'selection_revision' | 'chat_rect'>>
 type Bridge = {
   set_language(language: Language): Promise<BridgeResult & { language: Language; resolved_language: Locale }>
   get_state(): Promise<UiState>
@@ -43,9 +52,13 @@ type Bridge = {
   fetch_models(payload: string): Promise<BridgeResult & { models: string[] }>
   test_model(payload: string): Promise<BridgeResult & { message: string; message_message?: Message }>
   save_settings(payload: string): Promise<UiState & BridgeResult>
-  start_calibration(): Promise<BridgeResult>
-  analyze(preferences?: Partial<ReplyPreferences>): Promise<AnalysisResult>
-  analyze_text(payload: { text: string; preferences: ReplyPreferences }): Promise<AnalysisResult>
+  start_calibration(mode?: SelectionMode): Promise<BridgeResult>
+  get_selection_state?(): Promise<SelectionState>
+  set_selection_mode?(mode: SelectionMode): Promise<BridgeResult>
+  get_binding_candidates?(): Promise<BridgeResult & { candidates: BindingCandidate[] }>
+  confirm_binding?(id: string): Promise<BridgeResult>
+  analyze(preferences?: Partial<ReplyPreferences>, context?: AnalysisContext): Promise<AnalysisResult>
+  analyze_text(payload: { text: string; preferences: ReplyPreferences; context: AnalysisContext }): Promise<AnalysisResult>
   cancel_analysis(taskId: string): Promise<BridgeResult>
   retry_analysis(taskId: string, stage: RetryStage): Promise<AnalysisResult>
   set_on_top(value: boolean): Promise<{ ok: boolean }>
@@ -77,6 +90,22 @@ const editingId = ref('')
 const busy = ref(false)
 const inputSource = ref<'desktop' | 'text'>('desktop')
 const textInput = ref('')
+const context = ref<AnalysisContext>({ ...defaultContext })
+const contextTooLong = computed(() => unicodeLength(context.value.prior_text) > contextInputLimit || unicodeLength(context.value.background) > contextInputLimit)
+const bindingBusy = ref(false)
+const showBinding = ref(false)
+const bindingCandidates = ref<BindingCandidate[]>([])
+const selectedBindingId = ref('')
+let selectionRevision: number | undefined
+const selectionMode = computed<SelectionMode>(() => state.selection_mode ?? (state.chat_rect ? 'screen' : 'window'))
+const bindingStatus = computed(() => state.selection_binding?.status ?? 'none')
+const fixedRectValid = computed(() => !!state.chat_rect)
+const desktopReady = computed(() => selectionMode.value === 'window' ? bindingStatus.value === 'bound' : fixedRectValid.value)
+const bindingStatusText = computed(() => selectionMode.value === 'screen'
+  ? t(fixedRectValid.value ? 'capture.ready' : 'binding.fixedRequired')
+  : bindingStatus.value === 'bound'
+    ? t('binding.bound', { name: state.selection_binding?.display_name ?? '' })
+    : t(`binding.${bindingStatus.value === 'needs_confirmation' ? 'needsConfirmation' : bindingStatus.value}`))
 const textLimit = 20_000
 const textCount = computed(() => Array.from(textInput.value).length)
 const textTooLong = computed(() => textCount.value > textLimit)
@@ -90,20 +119,22 @@ const temporaryOpen = ref(false)
 const temporaryOverrides = ref<Partial<ReplyPreferences>>({})
 const effectivePreferences = computed<ReplyPreferences>(() => ({ ...state.reply_preferences, ...temporaryOverrides.value }))
 const analysisRunning = computed(() => ['capturing', 'recognizing', 'judging', 'generating', 'ranking'].includes(state.phase))
-const operationsLocked = computed(() => analysisRunning.value || state.phase === 'calibrating' || analysisBusy.value || calibrationBusy.value || cancelBusy.value || activeModelBusy.value || busy.value || languageBusy.value || updateBusy.value || updateChecking.value || updateRunning.value || updateReady.value)
-const canAnalyze = computed(() => !operationsLocked.value && (inputSource.value === 'text'
-  ? !!textInput.value.trim() && !textTooLong.value : true))
+const operationsLocked = computed(() => bindingBusy.value || showBinding.value || analysisRunning.value || state.phase === 'calibrating' || analysisBusy.value || calibrationBusy.value || cancelBusy.value || activeModelBusy.value || busy.value || languageBusy.value || updateBusy.value || updateChecking.value || updateRunning.value || updateReady.value)
+const canAnalyze = computed(() => !operationsLocked.value && !contextTooLong.value && (inputSource.value === 'text'
+  ? !!textInput.value.trim() && !textTooLong.value : desktopReady.value))
 const stageLabels = computed<Record<RetryStage, string>>(() => ({
   capture: t('feature.stageCapture'), judge: t('feature.stageJudge'),
   generate: t('feature.stageGenerate'), rank: t('feature.stageRank'),
 }))
 const retryStages = computed(() => (['capture', 'judge', 'generate', 'rank'] as RetryStage[])
-  .filter(stage => state.retryable_stages.includes(stage) && (stage !== 'capture' || state.input_source === 'desktop')))
+  .filter(stage => state.retryable_stages.includes(stage) && (stage !== 'capture' || (state.input_source === 'desktop' && desktopReady.value))))
 const topmost = ref(true)
 const toast = ref<Message | string>('')
 const toastError = ref(false)
 let toastTimer: number | undefined
 let pollTimer: number | undefined
+let selectionPollTimer: number | undefined
+let selectionPolling = false
 // Which operation is driving the progress poll. Analysis runs on the home page
 // and updates run on the settings page, so the poller cannot be page-scoped.
 let trackingState: 'analysis' | 'update' | null = null
@@ -200,9 +231,45 @@ function notify(message: Message | string, isError = false) {
   toastTimer = window.setTimeout(() => { toast.value = '' }, 3000)
 }
 function readableError(error: unknown) { return errorMessage(error) }
+function applySelection(next: Partial<UiState>, full = false) {
+  if (next.selection_revision !== undefined && selectionRevision !== undefined && next.selection_revision < selectionRevision) return
+  // Seed the initial revision without clearing session input. Ignore stale polls.
+  if (next.selection_revision !== undefined) {
+    if (selectionRevision !== undefined && next.selection_revision > selectionRevision) {
+      clearContextSupplements()
+      clearAnalysisState()
+    }
+    selectionRevision = Math.max(selectionRevision ?? next.selection_revision, next.selection_revision)
+    state.selection_revision = selectionRevision
+  }
+  if (full || next.selection_mode !== undefined) state.selection_mode = next.selection_mode ?? (next.chat_rect ? 'screen' : 'window')
+  if (full || next.selection_binding !== undefined) state.selection_binding = next.selection_binding ?? { status: 'none' }
+  if (full || 'chat_rect' in next) state.chat_rect = next.chat_rect ?? null
+}
+function clearContextSupplements() {
+  context.value = { ...context.value, prior_text: '', background: '' }
+}
+function clearAnalysisState() {
+  state.task_id = null
+  state.input_source = null
+  state.preview = []
+  state.analysis = null
+  state.suggestions = []
+  state.context_stats = null
+  state.failed_stage = null
+  state.retryable_stages = []
+  state.error = ''
+  state.error_message = undefined
+  state.status = ''
+  state.status_message = undefined
+}
 function applyState(next: UiState) {
   progressRevision = next.revision
-  Object.assign(state, next)
+  const { selection_mode, selection_binding, selection_revision, chat_rect, ...rest } = next
+  applySelection({ selection_mode, selection_binding, selection_revision, chat_rect }, true)
+  // Selection invalidation comes first; this snapshot may already contain a new task.
+  Object.assign(state, rest)
+  state.context_stats = next.context_stats ?? null
   state.reply_preferences = { ...defaultReplyPreferences, ...next.reply_preferences }
   state.retryable_stages = next.retryable_stages ?? []
   state.task_id = next.task_id ?? null
@@ -245,10 +312,13 @@ async function readProgress(force: boolean) {
 function applyProgress(result: Progress) {
   // An earlier in-flight poll may complete after a fresh task snapshot.
   if (result.revision < progressRevision) return
+  if (result.selection_revision !== undefined && selectionRevision !== undefined && result.selection_revision < selectionRevision) return
   progressRevision = result.revision
   state.revision = result.revision
   const { revision, ...changes } = result
-  Object.assign(state, changes)
+  const { selection_mode, selection_binding, selection_revision, chat_rect, ...rest } = changes
+  applySelection(changes)
+  Object.assign(state, rest)
   if ('status' in changes) state.status_message = changes.status_message
   if ('error' in changes) state.error_message = changes.error_message
   if (changes.update_info) updateInfo.value = changes.update_info
@@ -265,8 +335,23 @@ async function refreshAnalysisProgress() {
   await readProgress(true)
 }
 async function refreshCalibrationRectangle() {
-  const next = await bridge()!.get_state()
-  state.chat_rect = next.chat_rect
+  const api = bridge()!
+  const next = typeof api.get_selection_state === 'function'
+    ? await api.get_selection_state() : await api.get_state()
+  applySelection(next, true)
+}
+async function pollSelection() {
+  const api = bridge()
+  if (selectionPolling || page.value !== 'home' || inputSource.value !== 'desktop'
+    || operationsLocked.value || trackingState || polling || state.phase !== 'idle'
+    || typeof api?.get_selection_state !== 'function') return
+  selectionPolling = true
+  try {
+    const next = await api.get_selection_state()
+    // An idle poll may finish after the user begins another operation.
+    if (!operationsLocked.value && !trackingState) applySelection(next, true)
+  } catch { /* A transient descriptor failure must not erase a confirmed selection. */ }
+  finally { selectionPolling = false }
 }
 function resetDraft() {
   Object.assign(draft, { id: '', name: '', base_url: '', model: '', max_tokens: 400, key_configured: false, api_key: '', protocol: 'openai-chat' })
@@ -429,13 +514,48 @@ async function saveSettings() {
   } catch (error) { notify(readableError(error), true) }
   finally { busy.value = false }
 }
+async function changeSelectionMode(event: Event) {
+  const select = event.target as HTMLSelectElement
+  if (operationsLocked.value || typeof bridge()?.set_selection_mode !== 'function') { select.value = selectionMode.value; return }
+  bindingBusy.value = true
+  try {
+    checked(await bridge()!.set_selection_mode!(select.value as SelectionMode))
+    await refreshCalibrationRectangle()
+  } catch (error) { notify(errorMessage(error), true) }
+  finally { bindingBusy.value = false; select.value = selectionMode.value }
+}
+async function refreshBindingCandidates() {
+  if (bindingBusy.value || typeof bridge()?.get_binding_candidates !== 'function') return
+  bindingBusy.value = true
+  selectedBindingId.value = ''
+  bindingCandidates.value = []
+  try {
+    bindingCandidates.value = checked(await bridge()!.get_binding_candidates!()).candidates
+  } catch (error) { notify(errorMessage(error), true) }
+  finally { bindingBusy.value = false }
+}
+async function chooseBinding() {
+  if (operationsLocked.value || typeof bridge()?.get_binding_candidates !== 'function') return
+  showBinding.value = true
+  await refreshBindingCandidates()
+}
+async function confirmBinding() {
+  if (bindingBusy.value || typeof bridge()?.confirm_binding !== 'function' || !bindingCandidates.value.some(item => item.id === selectedBindingId.value)) return
+  bindingBusy.value = true
+  try {
+    checked(await bridge()!.confirm_binding!(selectedBindingId.value))
+    await refreshCalibrationRectangle()
+    showBinding.value = false
+  } catch (error) { notify(errorMessage(error), true) }
+  finally { bindingBusy.value = false }
+}
 async function calibrate() {
   if (operationsLocked.value) return
   calibrationBusy.value = true
   const previousPhase = state.phase
   state.phase = 'calibrating'
   try {
-    checked(await bridge()!.start_calibration())
+    checked(await bridge()!.start_calibration(selectionMode.value))
     trackingState = 'analysis'
     notify(m('capture.drag'))
     await refreshAnalysisProgress()
@@ -446,8 +566,8 @@ async function calibrate() {
 async function analyze() {
   if (!canAnalyze.value) return
   await runAnalysis(() => inputSource.value === 'text'
-    ? bridge()!.analyze_text({ text: textInput.value, preferences: { ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) } })
-    : bridge()!.analyze({ ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }),
+    ? bridge()!.analyze_text({ text: textInput.value, preferences: { ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }, context: { ...context.value } })
+    : bridge()!.analyze({ ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }, { ...context.value }),
   inputSource.value === 'desktop' ? 'capturing' : 'judging', true)
 }
 async function runAnalysis(start: () => Promise<AnalysisResult>, phase: string, newTask = false) {
@@ -467,6 +587,7 @@ async function runAnalysis(start: () => Promise<AnalysisResult>, phase: string, 
       state.retryable_stages = []
       state.error = ''
       state.error_message = undefined
+      if (newTask) state.context_stats = null
     }
     trackingState = 'analysis'
     // Fetch the authoritative task/phase even if the worker finished before polling.
@@ -550,10 +671,11 @@ async function changeLanguage(event: Event) {
 onMounted(() => {
   if (bridge()) void loadState()
   else window.addEventListener('pywebviewready', loadState, { once: true })
+  selectionPollTimer = window.setInterval(() => { void pollSelection() }, 1500)
   pollTimer = window.setInterval(() => { void pollProgress() }, 850)
   window.setTimeout(() => { if (updateInfo.value === null) void checkForUpdates(false) }, 4000)
 })
-onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState); window.clearInterval(pollTimer); window.clearTimeout(toastTimer); window.clearTimeout(addressTimer); window.clearTimeout(keyTimer) })
+onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState); window.clearInterval(pollTimer); window.clearInterval(selectionPollTimer); window.clearTimeout(toastTimer); window.clearTimeout(addressTimer); window.clearTimeout(keyTimer) })
 </script>
 
 <template>
@@ -599,11 +721,17 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
           <p class="field-hint">{{ t('feature.temporaryHint') }}</p>
           <button class="button button-quiet" :disabled="operationsLocked" @click="temporaryOverrides = {}; temporaryEnabled = false">{{ t('feature.resetOverrides') }}</button>
         </div>
+        <ContextOptions v-model="context" :disabled="operationsLocked" :stats="state.context_stats" />
       </section>
 
       <section v-if="inputSource === 'desktop'" class="setup-card surface">
-        <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>{{ t('capture.title') }}</h2><p>{{ state.chat_rect ? t('capture.ready') : t('capture.help') }}</p></div></div>
-        <div class="setup-actions"><span v-if="state.chat_rect" class="ready-chip"><CheckCircle2 :size="15" /> {{ t('capture.calibrated') }}</span><button class="button button-outline" :disabled="operationsLocked" @click="calibrate">{{ state.chat_rect ? t('capture.again') : t('capture.select') }} <ArrowRight :size="15" /></button></div>
+        <div class="setup-copy"><div class="setup-icon"><MessageCircle :size="18" /></div><div><h2>{{ t('capture.title') }}</h2><p>{{ bindingStatusText }}</p><p v-if="state.selection_binding?.reason && selectionMode === 'window'">{{ t(state.selection_binding.reason) }}</p></div></div>
+        <div class="binding-controls">
+          <label class="field-label" for="selection-mode">{{ t('binding.mode') }}</label>
+          <div class="select-wrap"><select id="selection-mode" :value="selectionMode" :disabled="operationsLocked || typeof bridge()?.set_selection_mode !== 'function'" @change="changeSelectionMode"><option value="window">{{ t('binding.window') }}</option><option value="screen">{{ t('binding.screen') }}</option></select></div>
+          <p class="field-hint">{{ t(selectionMode === 'window' ? 'binding.windowHelp' : 'binding.screenHelp') }}</p>
+          <div class="setup-actions"><span v-if="desktopReady" class="ready-chip"><CheckCircle2 :size="15" />{{ t('capture.calibrated') }}</span><button v-if="selectionMode === 'window'" class="button button-outline" :disabled="operationsLocked || typeof bridge()?.get_binding_candidates !== 'function' || typeof bridge()?.confirm_binding !== 'function'" @click="chooseBinding">{{ t('binding.chooseWindow') }}</button><button class="button button-outline" :disabled="operationsLocked" @click="calibrate">{{ t('binding.reselect') }} <ArrowRight :size="15" /></button></div>
+        </div>
       </section>
 
       <div class="content-grid">
@@ -757,6 +885,18 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
         <footer class="dialog-footer"><span class="dialog-safe"><LockKeyhole :size="14" />{{ t('model.keyStorage') }}</span><div><button class="button button-quiet" @click="showModel = false">{{ t('common.cancel') }}</button><button class="button button-primary" @click="saveModel"><Check :size="16" />{{ t('common.save') }}</button></div></footer>
       </section>
     </div>
+    <div v-if="showBinding" class="modal-backdrop" @keydown.esc="!bindingBusy && (showBinding = false)">
+      <section class="model-dialog confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="binding-dialog-title">
+        <header class="dialog-header"><h2 id="binding-dialog-title">{{ t('binding.confirmTitle') }}</h2><button class="small-icon" :disabled="bindingBusy" :aria-label="t('common.close')" @click="showBinding = false"><X :size="19" /></button></header>
+        <div class="dialog-scroll">
+          <p class="field-hint">{{ t('binding.confirmHelp') }}</p>
+          <label v-for="candidate in bindingCandidates" :key="candidate.id" class="binding-candidate"><input v-model="selectedBindingId" type="radio" name="binding-candidate" :value="candidate.id" :disabled="bindingBusy" />{{ candidate.title }}</label>
+          <p v-if="!bindingBusy && !bindingCandidates.length" class="field-hint">{{ t('binding.noCandidates') }}</p>
+          <button class="button button-outline" :disabled="bindingBusy" @click="refreshBindingCandidates"><RefreshCw :size="15" />{{ t('binding.refresh') }}</button>
+        </div>
+        <footer class="dialog-footer"><button class="button button-quiet" :disabled="bindingBusy" @click="showBinding = false">{{ t('common.cancel') }}</button><button class="button button-primary" :disabled="bindingBusy || !selectedBindingId" @click="confirmBinding"><LoaderCircle v-if="bindingBusy" :size="15" class="spin" />{{ t('binding.confirm') }}</button></footer>
+      </section>
+    </div>
     <div v-if="pendingDelete" class="modal-backdrop" @keydown.esc="pendingDelete = null">
       <section class="model-dialog confirm-dialog" role="alertdialog" aria-modal="true" :aria-label="t('common.delete')">
         <div class="dialog-header"><h2>{{ t('model.confirmDelete', { name: pendingDelete.name }) }}</h2></div>
@@ -768,6 +908,9 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 </template>
 
 <style>
+.binding-controls{min-width:240px;max-width:100%}
+.binding-candidate{display:flex;align-items:center;gap:10px;padding:10px 0;color:#45596f;font-size:13px;overflow-wrap:anywhere}
+.setup-card{flex-wrap:wrap;gap:16px}
 .settings-fields{min-width:0;margin:0;padding:0;border:0}
 .input-source-panel{padding:17px 19px;margin-bottom:14px}
 .input-source-toggle,.retry-actions{display:flex;flex-wrap:wrap;gap:8px}

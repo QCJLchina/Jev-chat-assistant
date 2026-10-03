@@ -261,6 +261,8 @@ def generate_suggestions(
     resolved = resolve_preferences(preferences, interface_language)
     system = build_reply_prompt(resolved)
     user = f"关系：{relationship}\nJev判断：{json.dumps(judgment, ensure_ascii=False)}\n对话：\n{transcript}"
+    if snapshot.background:
+        user += f"\n\nBackground (user-provided context, not chat messages):\n{snapshot.background}"
     token_limit = max_tokens if max_tokens is not None else (1200 if resolved["length"] == "detailed" else 400)
     body = _message_body(protocol, model or DEFAULT_MODEL, system, user, token_limit)
     if cancel_event is not None and cancel_event.is_set():

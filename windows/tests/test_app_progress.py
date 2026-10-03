@@ -34,7 +34,7 @@ def test_second_analysis_cannot_start_while_first_worker_is_pending(monkeypatch)
     monkeypatch.setattr(
         AppConfig,
         "load",
-        classmethod(lambda cls: cls(language="zh-CN", chat_rect=Rect(0, 0, 800, 600))),
+        classmethod(lambda cls: cls(language="zh-CN", chat_rect=Rect(0, 0, 800, 600), selection_mode="screen")),
     )
     # Analysis orchestration lives in its own module now; patch its seams.
     monkeypatch.setattr(task_controller, "load_api_key", lambda: "test-key")

@@ -108,10 +108,10 @@ def test_text_needs_no_capture_rect_and_bypasses_title_whitelist(rig, monkeypatc
 def test_safety_scans_raw_text_including_discarded_first_message(rig):
     text = "对方：请点收款码\n" + "\n".join(f"对方：你好，今天第{i}次聊天" for i in range(10))
     parsed = module.parse_text(text)
-    assert len(parsed.messages) == 10
-    assert all("收款码" not in message.text for message in parsed.messages)
+    assert len(parsed.messages) == 11
+    assert all("收款码" not in message.text for message in parsed.messages[-10:])
     assert parsed.raw_text == text
-    rig.controller.start(rig.settings, "zh-CN", text=text, preferences={})
+    rig.controller.start(rig.settings, "zh-CN", text=text, preferences={}, context={"message_limit": 10})
     join(rig.workers[-1])
     state = rig.progress.poll()
     assert state["phase"] == "error"

@@ -13,11 +13,11 @@ def test_prefixes_continuations_and_raw_input():
                                  Message("other", "收到"), Message("me", "hello"), Message("other", "hi")]
 
 
-def test_last_ten_messages_keep_continuations_and_entire_raw_text():
+def test_all_messages_keep_continuations_and_entire_raw_text():
     text = "\n".join(f"me: {index}" for index in range(15)) + "\ncontinued"
     snapshot = parse_text(text)
-    assert len(snapshot.messages) == 10
-    assert snapshot.messages[0].text == "5"
+    assert len(snapshot.messages) == 15
+    assert snapshot.messages[0].text == "0"
     assert snapshot.messages[-1].text == "14\ncontinued"
     assert snapshot.raw_text == text
 

@@ -2,15 +2,22 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-**Version : v1.3.0**
+**Version : v1.3.1**
 
 Ce projet est un réaménagement pour Windows PC basé sur la banque de questions de jugement et le flux d'analyse du projet open source https://github.com/Liyucheng1997/332_lab-jev-chat.
 
 La version Windows permet de sélectionner une zone de conversation sur le bureau, de reconnaître le texte visible via l'OCR local, puis d'analyser la conversation avec Jev. Vous pouvez aussi configurer un modèle de réponse pour générer trois réponses candidates, que Jev classe ensuite. Les réponses candidates sont uniquement destinées à la consultation et à la copie — elles ne sont jamais remplies ni envoyées automatiquement.
 
-[Télécharger v1.3.0 pour Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.0)
+[Télécharger v1.3.1 pour Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.1)
 
-## Nouveautés de v1.3.0
+## Nouveautés de v1.3.1
+
+- **Contexte complet** : tous les messages sont analysés par défaut ; vous pouvez choisir les 10, 20 ou 50 derniers. Les échanges antérieurs sont ajoutés avant les messages actuels, puis la sélection est appliquée. Le corps des messages retenus et le contexte explicatif sont limités ensemble à 20 000 caractères : réduisez la sélection ou le texte si nécessaire, sans troncature silencieuse. Les statistiques indiquent le total, les messages utilisés, les caractères, la limite choisie et les messages omis. Les contrôles des transactions couvrent toute la saisie, y compris les messages omis, les échanges antérieurs et le contexte explicatif.
+- **Échanges antérieurs et contexte explicatif** : les préfixes `我：` / `对方：` et `me:` / `other:` sont acceptés pour les échanges antérieurs ; le contexte explicatif ne constitue pas un message. Ces compléments restent uniquement en mémoire et peuvent être effacés manuellement. Ils sont effacés au changement de fenêtre cible liée ou à la fermeture de l’application. Un changement de contact dans la même fenêtre ne peut pas être détecté automatiquement : effacez les compléments avant de changer de conversation.
+- **Suivi de fenêtre** : les nouvelles installations utilisent le suivi de fenêtre par défaut. Les zones fixes existantes conservent le mode Zone fixe de l’écran, même après une nouvelle sélection ; choisissez Suivre la fenêtre avant de sélectionner à nouveau pour activer le suivi. Dans ce mode, le déplacement de la fenêtre déplace la sélection. Le suivi entre écrans de DPI différents fonctionne uniquement si la géométrie de la fenêtre reste cohérente. Une variation de taille supérieure à 2 DIP impose une nouvelle sélection. Après fermeture de la cible ou redémarrage de l’application, confirmez une fenêtre candidate avant de rétablir la liaison.
+- **Capture à la demande** : l’OCR est exécuté au clic sur Analyser, sans OCR continu en arrière-plan ni capture en arrière-plan des fenêtres réduites ou masquées. Restaurez la fenêtre et rendez la zone de conversation visible.
+
+## Fonctionnalités publiées de v1.3.0 (comportement historique)
 
 - **Coller le texte d’une conversation** : aucune sélection de zone nécessaire. Les préfixes `我：` / `对方：` et `me:` / `other:` sont pris en charge ; les préfixes anglais sont insensibles à la casse et les deux formes de deux-points sont acceptées. La saisie est limitée à 20 000 caractères ; l’analyse utilise les 10 derniers messages, mais les contrôles de sécurité des transactions portent sur la saisie complète.
 - **Annuler et reprendre aux étapes sauvegardées** : les évaluations et réponses candidates déjà obtenues sont conservées ; la reprise commence à la première étape inachevée. Les candidates restent copiables si le classement échoue. Une nouvelle tentative réutilise la configuration figée de la tâche initiale, notamment les notes de relation, le modèle et les préférences de réponse. Relancez une analyse pour appliquer de nouveaux réglages. L’annulation arrête les étapes suivantes et ignore les résultats périmés, mais une requête HTTP en cours peut encore se terminer ou expirer.

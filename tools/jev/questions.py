@@ -204,8 +204,10 @@ JUDGE_QUESTIONS: dict = {
 }
 
 
-def build_state(messages: list, relationship: str) -> dict:
-    """messages: list of (from, text) or [from, text]. from is 'her' or 'me'. Keep last 10."""
+def build_state(messages: list, relationship: str, *, message_limit: int | None = 10) -> dict:
+    """Build chat state; tool callers keep ten messages unless explicitly overridden."""
+    if message_limit is not None and (type(message_limit) is not int or message_limit <= 0):
+        raise ValueError("message_limit must be a positive integer or None")
     cleaned = []
     for item in messages:
         if isinstance(item, dict):
@@ -215,7 +217,8 @@ def build_state(messages: list, relationship: str) -> dict:
         if who not in ("her", "me"):
             raise ValueError(f"message from must be 'her' or 'me', got {who!r}")
         cleaned.append({"from": who, "text": str(text)})
-    cleaned = cleaned[-10:]
+    if message_limit is not None:
+        cleaned = cleaned[-message_limit:]
     latest_from = cleaned[-1]["from"] if cleaned else "her"
     return {
         "chat": {

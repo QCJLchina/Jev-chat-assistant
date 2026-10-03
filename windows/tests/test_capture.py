@@ -24,6 +24,17 @@ def test_boxes_are_classified_by_side_and_center_rows_ignored():
     ]
 
 
+def test_ocr_keeps_more_than_ten_messages(monkeypatch):
+    area = Rect(0, 0, 1000, 1800)
+    boxes = [TextBox(f"message-{index}", Rect(100, 100 + index * 100, 300, 130 + index * 100))
+             for index in range(15)]
+    monkeypatch.setattr(windows_api, "virtual_screen_rect", lambda: area)
+    monkeypatch.setattr(capture, "_ocr_boxes", lambda rect, image: boxes)
+    snapshot = capture.capture_desktop_chat(area, lambda rect: (object(), "chat"))
+    assert [m.text for m in snapshot.messages] == [f"message-{index}" for index in range(15)]
+    assert snapshot.raw_text == "\n".join(box.text for box in boxes)
+
+
 def test_same_visual_row_is_joined_left_to_right():
     area = Rect(0, 0, 1000, 800)
     boxes = [
@@ -56,11 +67,16 @@ def test_frozen_ocr_samples_produce_the_expected_transcript(scenario):
     """Locked baseline for the grouping/merging constants in capture.py.
 
     A failure here means the row tolerance, merge gap, edge alignment, center
-    dead zone or message cap changed behaviour for a recorded real layout.
+    dead zone changed behaviour for a recorded real layout. The legacy cap
+    fixture now explicitly expects all messages under the full-context contract.
     """
     messages = _boxes_to_messages(scenario["boxes"], scenario["area"])
 
-    assert [(item.side, item.text) for item in messages] == scenario["expected"]
+    expected = scenario["expected"]
+    if scenario["name"] == "only_the_last_messages_are_sent":
+        expected = [("other" if index % 2 == 0 else "me", f"消息{index:02d}")
+                    for index in range(14)]
+    assert [(item.side, item.text) for item in messages] == expected
 
 
 def test_frozen_ocr_samples_flow_through_the_desktop_capture(monkeypatch):

@@ -163,3 +163,53 @@ def test_cancelled_generation_does_not_dispatch_request(monkeypatch):
     with pytest.raises(jev_api.JevCancelledError):
         deepseek_client.generate_suggestions(ChatSnapshot("", [Message("other", "hi")]),
                                               "friends", Analysis(), "fixture-key", cancel_event=event)
+
+
+@pytest.mark.parametrize("protocol", ["openai-chat", "openai-responses", "anthropic"])
+@pytest.mark.parametrize("limit", [None, 20])
+def test_full_context_is_consistent_across_judge_generation_and_ranking(monkeypatch, protocol, limit):
+    from jev_windows.context import compose_context
+    from jev_windows.input_text import parse_text
+
+    source = parse_text("\n".join(f"other: current-{index:02d}" for index in range(23)) + "\nme: last-selected")
+    background = "other: background fact; this is metadata"
+    effective, stats = compose_context(source, {
+        "prior_text": "me: prior-first\nother: prior-second", "background": background,
+        "message_limit": limit})
+    jev_states = []
+    generation = {}
+
+    def fake_post(key, body, **kwargs):
+        jev_states.append(body["state"])
+        return {"answers": {}}
+
+    def fake_call(base_url, key, used_protocol, body, timeout):
+        assert used_protocol == protocol
+        generation.update(body)
+        content = '{"replies":["a","b","c"]}'
+        return {"choices": [{"message": {"content": content}}], "output_text": content,
+                "content": [{"type": "text", "text": content}]}
+
+    monkeypatch.setattr(jev_api, "_post", fake_post)
+    monkeypatch.setattr(deepseek_client, "_call_model", fake_call)
+    relationship = "friends"
+    analysis = jev_api.judge(effective, relationship, "key")
+    replies = deepseek_client.generate_suggestions(effective, relationship, analysis, "key", protocol=protocol)
+    jev_api.recommend_replies(effective, relationship, replies, "key")
+    assert jev_states[0] == jev_states[1]
+    chat = jev_states[0]["chat"]
+    assert chat["messages"] == [{"from": "me" if m.side == "me" else "her", "text": m.text}
+                                for m in effective.messages]
+    assert len(chat["messages"]) == stats["used_messages"] > 10
+    assert chat["latest_from"] == "me"
+    assert chat["relationship"] == f"friends\n\nBackground (user-provided context, not chat messages):\n{background}"
+    user = (generation["input"][0]["content"] if protocol == "openai-responses" else
+            generation["messages"][0 if protocol == "anthropic" else 1]["content"])
+    expected_transcript = "\n".join(f"{'我' if m.side == 'me' else '对方'}：{m.text}" for m in effective.messages)
+    assert user.endswith(f"对话：\n{expected_transcript}\n\nBackground (user-provided context, not chat messages):\n{background}")
+    assert user.count(background) == 1
+    assert all(m.text in user for m in effective.messages)
+    if limit is not None:
+        assert "prior-first" not in user and "current-00" not in user
+    assert source.background == "" and len(source.messages) == 24
+    assert relationship == "friends"

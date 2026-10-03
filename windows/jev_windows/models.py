@@ -33,6 +33,7 @@ class ChatSnapshot:
     title: str
     messages: list[Message]
     raw_text: str = ""
+    background: str = ""
 
     def signature(self) -> str:
         return "|".join(f"{m.side}:{m.text}" for m in self.messages[-6:])

@@ -13,6 +13,7 @@ from .i18n import msg, translate
 from .input_text import parse_text
 from .reply_preferences import resolve_preferences, validate_preferences
 from .models import Analysis, ChatSnapshot
+from .context import normalize_context, compose_context
 from .safety import assert_safe_chat
 
 
@@ -25,6 +26,9 @@ class Job:
     key: str
     model_key: str
     profile: ModelProfile | None
+    context_options: dict = field(default_factory=dict)
+    context_prepared: bool = False
+    context_stats: dict | None = None
     snapshot: ChatSnapshot | None = None
     judgment: Analysis | None = None
     replies: list[str] = field(default_factory=list)
@@ -42,8 +46,9 @@ class GuardedProgress:
 
 
 class AnalysisController:
-    def __init__(self, progress):
+    def __init__(self, progress, binding_service=None):
         self.progress = progress
+        self.binding_service = binding_service
         self.job = None
         self.capture_lock = threading.RLock()
 
@@ -57,22 +62,27 @@ class AnalysisController:
             self.progress.update(**values)
             return True
 
-    def start(self, settings, locale, window=None, text=None, preferences=None):
+    def start(self, settings, locale, window=None, text=None, preferences=None, context=None):
         frozen = copy.deepcopy(settings)
         selected = validate_preferences({**frozen.reply_preferences, **(preferences or {})})
         selected = resolve_preferences(selected, locale)
+        options = normalize_context(context)
         snapshot = parse_text(text) if text is not None else None
         key = load_api_key()
         if not key:
             raise ValueError(msg("error.jevKey"))
-        if text is None and not frozen.chat_rect:
-            raise ValueError(msg("error.selectFirst"))
+        if text is None:
+            if self.binding_service is not None and frozen.selection_mode == "window":
+                if not frozen.window_binding:
+                    raise ValueError(msg("binding.selectFirst"))
+            elif not frozen.chat_rect:
+                raise ValueError(msg("error.selectFirst"))
         profile = next((p for p in frozen.model_profiles if p.id == frozen.active_model_id), None)
         model_key = load_model_api_key(profile.id) if profile else ""
         if profile and not (model_key or is_local_base_url(profile.base_url)):
             profile = None
         job = Job(frozen, locale, "text" if text is not None else "desktop", selected,
-                  key, model_key, profile, snapshot=snapshot, stage="judge" if snapshot else "capture")
+                  key, model_key, profile, context_options=options, snapshot=snapshot, stage="judge" if snapshot else "capture")
         with self.progress.lock:
             if self.progress.phase() not in {"idle", "error"}:
                 raise ValueError(msg("error.busy"))
@@ -92,7 +102,7 @@ class AnalysisController:
         values = dict(task_id=job.task_id, input_source=job.source, failed_stage=None,
                       retryable_stages=[], error="", phase=phases[job.stage], status=statuses[job.stage])
         if fresh:
-            values.update(preview=[], analysis=None, suggestions=[])
+            values.update(preview=[], analysis=None, suggestions=[], context_stats=None)
         self.progress.update(**values)
         threading.Thread(target=self._run, args=(job, window), daemon=True).start()
 
@@ -111,7 +121,7 @@ class AnalysisController:
             raise ValueError(msg("feature.taskExpired"))
         return self.job
 
-    def retry(self, task_id, stage, window=None, selected_rect=None):
+    def retry(self, task_id, stage, window=None, selected_rect=None, selected_binding=None):
         with self.progress.lock:
             old = self._lookup(task_id)
             if self.progress.phase() not in {"idle", "error"}:
@@ -121,12 +131,29 @@ class AnalysisController:
             job = copy.copy(old)
             if stage == "capture":
                 job.snapshot = None
-                if selected_rect is not None:
+                job.context_prepared = False
+                job.context_stats = None
+                if (selected_binding is not None and self.binding_service is not None
+                        and job.settings.selection_mode == "window"
+                        and self.binding_service.same_target(old.settings.window_binding, selected_binding)):
+                    job.settings = copy.deepcopy(old.settings)
+                    job.settings.window_binding = copy.deepcopy(selected_binding)
+                if selected_rect is not None and job.settings.selection_mode == "screen":
                     job.settings = copy.deepcopy(old.settings)
                     job.settings.chat_rect = selected_rect
             job.stage = stage
             self._launch(job, window)
         return {"ok": True, "task_id": job.task_id}
+
+    def invalidate(self):
+        """Changing capture targets ends the previous in-memory session."""
+        with self.progress.lock:
+            if self.job:
+                self.job.cancel.set()
+            self.job = None
+            self.progress.update(task_id=None, input_source=None, failed_stage=None,
+                                 retryable_stages=[], preview=[], analysis=None, suggestions=[], context_stats=None,
+                                 error="", status=msg("status.initial"), phase="idle")
 
     def _checkpoint(self, job, **values):
         with self.progress.lock:
@@ -142,9 +169,14 @@ class AnalysisController:
                 with self.capture_lock:
                     if not self._current(job):
                         return
-                    snapshot = workflow.AnalysisService(job.settings, GuardedProgress(self, job), window).capture(job.settings.chat_rect)
+                    snapshot = workflow.AnalysisService(job.settings, GuardedProgress(self, job), window, binding_service=self.binding_service).capture(job.settings.chat_rect)
                 if not self._checkpoint(job, snapshot=snapshot, stage="judge"):
                     return
+            if not job.context_prepared:
+                snapshot, stats = compose_context(job.snapshot, job.context_options)
+                if not self._checkpoint(job, snapshot=snapshot, context_prepared=True, context_stats=stats):
+                    return
+                self.publish(job, context_stats=stats)
             assert_safe_chat(job.snapshot.raw_text)
             if job.source == "desktop" and job.settings.allowed_titles and not any(t in job.snapshot.title for t in job.settings.allowed_titles):
                 raise RuntimeError(msg("error.allowlist", name=job.snapshot.title or translate("capture.desktopTitle", job.locale)))

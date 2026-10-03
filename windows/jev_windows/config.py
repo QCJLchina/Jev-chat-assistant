@@ -10,6 +10,7 @@ import win32cred
 from .models import Rect
 from .providers import default_profiles
 from .reply_preferences import validate_preferences
+from .window_binding import validate_descriptor, BindingError
 
 
 APP_NAME = "JevChatAssistant"
@@ -40,12 +41,21 @@ class AppConfig:
     relationship: str = "对方是我的朋友；from=me 是我发的，from=other 是对方发的"
     deepseek_model: str = "deepseek-flash"
     chat_rect: Rect | None = None
+    selection_mode: str = "window"
+    window_binding: dict | None = None
     allowed_titles: list[str] = field(default_factory=list)
     model_profiles: list[ModelProfile] = field(default_factory=default_profiles)
     active_model_id: str = "deepseek"
     reply_preferences: dict[str, str] = field(default_factory=validate_preferences)
 
     def __post_init__(self) -> None:
+        if self.selection_mode not in {"window", "screen"}:
+            self.selection_mode = "screen"
+        if self.window_binding is not None:
+            try:
+                self.window_binding = validate_descriptor(self.window_binding)
+            except BindingError:
+                self.window_binding = None
         self.reply_preferences = validate_preferences(self.reply_preferences)
 
     @classmethod
@@ -55,6 +65,8 @@ class AppConfig:
             return cls()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            if "selection_mode" not in raw:
+                raw["selection_mode"] = "screen"
             from .i18n import LANGUAGES
             if not isinstance(raw.get("language"), str) or raw["language"] not in LANGUAGES:
                 raw["language"] = "zh-CN"
@@ -85,6 +97,7 @@ class AppConfig:
             return cls()
 
     def save(self) -> None:
+        self.__post_init__()
         self.reply_preferences = validate_preferences(self.reply_preferences)
         directory = config_dir()
         directory.mkdir(parents=True, exist_ok=True)

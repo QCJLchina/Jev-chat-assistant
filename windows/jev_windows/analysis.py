@@ -15,7 +15,8 @@ from .jev_api import judge, recommend_replies
 from .models import Analysis, Rect
 from .safety import assert_safe_chat
 from .state import ProgressState
-from .windows_api import screenshot, window_title_at
+from .windows_api import screenshot, window_title_at, physical_window_coordinates, NativeWindowError
+from .window_binding import BindingError
 from .workflow import capture_without_overlay
 
 
@@ -36,10 +37,11 @@ def analysis_data(analysis: Analysis | None) -> dict | None:
 class AnalysisService:
     """Runs one analysis pass on a worker thread and reports through ProgressState."""
 
-    def __init__(self, settings: AppConfig, progress: ProgressState, window_for_hiding=None):
+    def __init__(self, settings: AppConfig, progress: ProgressState, window_for_hiding=None, binding_service=None):
         self.settings = settings
         self.progress = progress
         self.window = window_for_hiding
+        self.binding_service = binding_service
 
     def _hide(self) -> None:
         if self.window:
@@ -52,6 +54,22 @@ class AnalysisService:
 
     def capture(self, area: Rect):
         """Grab the chat text, hiding the assistant so OCR cannot read itself."""
+
+        if self.binding_service is not None and self.settings.selection_mode == "window":
+            def bound_frame():
+                try:
+                    # Querying and grabbing pixels must use the same physical
+                    # coordinate context, including system-DPI-aware executables.
+                    with physical_window_coordinates():
+                        resolved = self.binding_service.resolve(self.settings.window_binding)
+                        image = screenshot(resolved.rect)
+                        self.binding_service.validate_after(self.settings.window_binding, resolved)
+                        return resolved.rect, image, resolved.title
+                except NativeWindowError as exc:
+                    raise BindingError("binding.unavailable") from exc
+            region, image, title = capture_without_overlay(self._hide, self._show, bound_frame)
+            self.progress.update(phase="recognizing", status=msg("status.recognizing"))
+            return capture_desktop_chat(region, lambda _: (image, title))
 
         def capture_frame(region: Rect) -> tuple[object, str]:
             frame = capture_without_overlay(
