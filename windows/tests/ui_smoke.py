@@ -140,7 +140,7 @@ def main() -> None:
         assert not page.evaluate("Object.values(localStorage).join(' ')").find("test-secret-not-persisted") >= 0
         assert not page_errors, page_errors
         full_state_calls = page.evaluate("window.__fullStateCalls")
-        page.get_by_role("button", name="分析当前选区").click()
+        page.get_by_role("button", name="采集并校对").click()
         expect(page.locator(".status-line")).to_contain_text("模拟分析完成", timeout=5000)
         assert page.evaluate("window.__maxActiveProgress") == 1
         assert page.evaluate("window.__fullStateCalls") == full_state_calls

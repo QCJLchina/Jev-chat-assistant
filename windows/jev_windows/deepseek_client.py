@@ -11,6 +11,8 @@ import urllib.request
 
 from .models import Analysis, ChatSnapshot
 from .reply_preferences import build_reply_prompt, resolve_preferences
+from .reply_intent import intent_prompt
+from .safety import assert_safe_chat
 
 
 CHAT_URL = "https://api.deepseek.com/chat/completions"
@@ -246,6 +248,7 @@ def generate_suggestions(
     preferences: dict[str, str] | None = None,
     interface_language: str = "zh-CN",
     cancel_event=None,
+    intent: str = "general",
 ) -> list[str]:
     if protocol not in SUPPORTED_PROTOCOLS:
         raise DeepSeekError(msg("error.protocol"))
@@ -260,6 +263,7 @@ def generate_suggestions(
     }
     resolved = resolve_preferences(preferences, interface_language)
     system = build_reply_prompt(resolved)
+    system += " " + intent_prompt(intent)
     user = f"关系：{relationship}\nJev判断：{json.dumps(judgment, ensure_ascii=False)}\n对话：\n{transcript}"
     if snapshot.background:
         user += f"\n\nBackground (user-provided context, not chat messages):\n{snapshot.background}"
@@ -276,3 +280,44 @@ def generate_suggestions(
     if len(replies) != 3:
         raise DeepSeekError(msg("error.repliesCount"))
     return replies
+
+
+def rewrite_reply(snapshot, relationship, analysis, reply, action, key,
+                  model=DEFAULT_MODEL, base_url=DEFAULT_API_BASE_URL,
+                  max_tokens=None, protocol=DEFAULT_PROTOCOL, *,
+                  preferences=None, intent="general", cancel_event=None):
+    """Generate exactly one replacement using the frozen task context."""
+    instructions = {
+        "shorter": "Make this reply shorter while preserving its meaning.",
+        "natural": "Make this reply more natural and conversational.",
+        "gentle": "Make this reply more tactful and considerate.",
+    }
+    if action not in instructions or protocol not in SUPPORTED_PROTOCOLS:
+        raise ValueError(msg("review.invalidAction"))
+    assert_safe_chat(reply)
+    resolved = resolve_preferences(preferences)
+    system = build_reply_prompt(resolved).replace(
+        "Provide exactly three distinct suggestions.", "Rewrite exactly one reply.").replace(
+        'Output only JSON: {"replies":["...","...","..."]}.',
+        'Output only JSON: {"reply":"..."}.')
+    system += " " + intent_prompt(intent) + " " + instructions[action]
+    system += " Preserve the original meaning. Add no unsupported facts or promises."
+    user = json.dumps({"relationship": relationship, "judgment": vars(analysis),
+                       "messages": [vars(message) for message in snapshot.messages],
+                       "background": snapshot.background, "reply": reply}, ensure_ascii=False)
+    tokens = max_tokens if max_tokens is not None else (1200 if resolved["length"] == "detailed" else 400)
+    if cancel_event is not None and cancel_event.is_set():
+        from .jev_api import JevCancelledError
+        raise JevCancelledError("Reply request cancelled")
+    response = _call_model(base_url, key, protocol,
+                           _message_body(protocol, model, system, user, tokens), 35)
+    try:
+        content = _response_text(response, protocol).strip()
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I)
+        value = json.loads(content)["reply"]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("empty reply")
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+        raise DeepSeekError(msg("review.invalidReply")) from exc
+    assert_safe_chat(value)
+    return value.strip()

@@ -19,6 +19,7 @@ from .reply_preferences import validate_preferences
 from .calibration import is_usable_selection, select_region
 from .config import (
     AppConfig,
+    OPTIONAL_MODULES,
     ModelProfile,
     delete_api_key,
     delete_model_api_key,
@@ -135,12 +136,25 @@ class DesktopApi:
             "jev_key_configured": bool(load_api_key()),
             "relationship": self.settings.relationship,
             "reply_preferences": self.settings.reply_preferences,
+            "module_visibility": dict(self.settings.module_visibility),
             "allowed_titles": self.settings.allowed_titles,
             "profiles": [self._safe_profile(item) for item in self.settings.model_profiles],
             "active_model_id": self.settings.active_model_id,
             "provider_presets": preset_data(),
             **self.get_selection_state(),
         }
+
+    @bridge_errors
+    @settings_lock
+    def set_module_visibility(self, changes: dict) -> dict:
+        if (not isinstance(changes, dict) or any(name not in OPTIONAL_MODULES for name in changes)
+                or any(type(value) is not bool for value in changes.values())):
+            raise ValueError(msg("layout.invalid"))
+        visibility = {**self.settings.module_visibility, **changes}
+        candidate = replace(self.settings, module_visibility=visibility)
+        candidate.save()
+        self.settings.module_visibility = visibility
+        return {"ok": True, "module_visibility": dict(visibility)}
 
     @bridge_errors
     def fetch_models(self, payload: str | dict) -> dict:
@@ -355,8 +369,9 @@ class DesktopApi:
 
     @bridge_errors
     @settings_lock
-    def analyze(self, preferences: dict | None = None, context: dict | None = None) -> dict:
-        return self._analysis.start(self.settings, self.resolved_language, self.window, preferences=preferences, context=context)
+    def analyze(self, preferences: dict | None = None, context: dict | None = None, intent: str = "general") -> dict:
+        return self._analysis.start(self.settings, self.resolved_language, self.window,
+                                    preferences=preferences, context=context, review=True, intent=intent)
 
     @bridge_errors
     @settings_lock
@@ -365,7 +380,36 @@ class DesktopApi:
         if not isinstance(data, dict) or not isinstance(data.get("text"), str):
             raise ValueError(msg("feature.emptyText"))
         return self._analysis.start(self.settings, self.resolved_language, self.window,
-                                   text=data.get("text", ""), preferences=data.get("preferences"), context=data.get("context"))
+                                   text=data.get("text", ""), preferences=data.get("preferences"), context=data.get("context"),
+                                   review=True, intent=data.get("intent", "general"))
+
+    @bridge_errors
+    @settings_lock
+    def submit_review(self, payload: dict) -> dict:
+        return self._analysis.submit_review(payload.get("review_id"), payload.get("messages"),
+            self.settings, self.resolved_language, preferences=payload.get("preferences"),
+            context=payload.get("context"), intent=payload.get("intent", "general"), window=self.window)
+
+    @bridge_errors
+    def discard_review(self, review_id: str) -> dict:
+        with self.progress.lock:
+            job = self._analysis._lookup(review_id)
+            if not job.review or self.progress.phase() not in {"idle", "error"}:
+                raise ValueError(msg("feature.taskInactive"))
+            self._analysis.invalidate()
+        return {"ok": True}
+
+    @bridge_errors
+    def rewrite_reply(self, task_id: str, index: int, action: str, revision: int) -> dict:
+        return self._analysis.rewrite(task_id, index, action, revision)
+
+    @bridge_errors
+    def undo_reply(self, task_id: str, index: int, revision: int) -> dict:
+        return self._analysis.undo_reply(task_id, index, revision)
+
+    @bridge_errors
+    def rank_replies(self, task_id: str, revision: int) -> dict:
+        return self._analysis.rank(task_id, revision)
 
     @bridge_errors
     def cancel_analysis(self, task_id: str) -> dict:
@@ -374,6 +418,8 @@ class DesktopApi:
     @bridge_errors
     @settings_lock
     def retry_analysis(self, task_id: str, stage: str) -> dict:
+        if stage == "rewrite":
+            return self._analysis.retry_rewrite(task_id)
         return self._analysis.retry(task_id, stage, self.window, self.settings.chat_rect, self.settings.window_binding)
 
     # ------------------------------------------------------------------

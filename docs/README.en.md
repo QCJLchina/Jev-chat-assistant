@@ -2,13 +2,19 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-**Version: v1.3.1**
+**Version: v1.4.0**
+
+## v1.4.0 new features
+
+- **Review before analysis**: Edit text, speakers and message order, add or delete messages, restore recognition or capture again. Analysis services run only after confirmation. Original input and initial supplements remain subject to transaction checks; drafts stay in memory.
+- **Reply goals**: General reply, politely decline, clarify misunderstanding, end topic or ease conflict. Combine with length, tone and language. Goals are session-only and frozen when analysis is confirmed.
+- **Rewrite individual replies**: Make a candidate shorter, more natural or more tactful; undo, cancel and retry. Changes clear old scores; rank again manually. Replies remain copy-only.
 
 This project is a Windows PC re-development based on the judgment question bank and analysis flow of the open-source project https://github.com/Liyucheng1997/332_lab-jev-chat.
 
 The Windows version lets you select a chat area on your desktop, recognizes the visible text with local OCR, and analyzes the conversation through Jev. You can also configure a reply model to generate three candidate replies, which Jev then ranks. Candidate replies are for viewing and copying only — they are never filled in or sent automatically.
 
-[Download v1.3.1 for Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.1)
+[Download v1.4.0 for Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.4.0)
 
 ## v1.3.1 new features
 
@@ -51,7 +57,7 @@ This localization covers the interface, prompts, and analysis result labels. Cha
 
 1. Open the chat window you want assistance with and enter a regular text chat.
 2. Click "Select conversation area" and drag to cover the chat messages.
-3. Click "Analyze current selection" to see the Jev judgment and candidate replies.
+3. Click "Capture and review", correct the messages and select a reply goal, then click "Confirm and analyze".
 4. Review and copy a suitable candidate, then decide yourself whether to send it.
 
 The program never reads chat databases, touches chat input boxes, or sends messages automatically. Transfers, red packets, payment requests, and other transaction content are blocked by the safety checks. Images, voice messages, and quoted cards cannot yet be reliably reconstructed.

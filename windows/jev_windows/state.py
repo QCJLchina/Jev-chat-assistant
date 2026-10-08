@@ -28,6 +28,12 @@ class ProgressState:
             "failed_stage": None,
             "retryable_stages": [],
             "context_stats": None,
+            "review_id": None,
+            "review_messages": [],
+            "task_intent": "general",
+            "reply_revision": 0,
+            "reply_histories": [],
+            "ranking_valid": False,
         }
         self._state["status_message"] = describe(self._state["status"])
         self._state["error_message"] = None

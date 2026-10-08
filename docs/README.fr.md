@@ -2,13 +2,19 @@
 
 [简体中文](../README.md) | [English](README.en.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
-**Version : v1.3.1**
+**Version : v1.4.0**
+
+## Nouveautés v1.4.0
+
+- **Relire avant l’analyse** : modifiez le texte, les interlocuteurs et l’ordre, ajoutez ou supprimez des messages. L’analyse commence après confirmation. Le texte original et les compléments initiaux restent contrôlés ; les brouillons restent en mémoire.
+- **Objectif de réponse** : réponse générale, refus poli, clarification, clôture du sujet ou apaisement du conflit. Compatible avec la longueur, le ton et la langue ; conservé pour la session et figé à la confirmation.
+- **Reformulation individuelle** : plus court, plus naturel ou plus délicat, avec annulation et nouvelle tentative. Toute modification efface les scores ; reclassement manuel. Les réponses peuvent uniquement être copiées.
 
 Ce projet est un réaménagement pour Windows PC basé sur la banque de questions de jugement et le flux d'analyse du projet open source https://github.com/Liyucheng1997/332_lab-jev-chat.
 
 La version Windows permet de sélectionner une zone de conversation sur le bureau, de reconnaître le texte visible via l'OCR local, puis d'analyser la conversation avec Jev. Vous pouvez aussi configurer un modèle de réponse pour générer trois réponses candidates, que Jev classe ensuite. Les réponses candidates sont uniquement destinées à la consultation et à la copie — elles ne sont jamais remplies ni envoyées automatiquement.
 
-[Télécharger v1.3.1 pour Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.3.1)
+[Télécharger v1.4.0 pour Windows](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.4.0)
 
 ## Nouveautés de v1.3.1
 
@@ -51,7 +57,7 @@ Cette localisation couvre l'interface, les messages et les libellés des résult
 
 1. Ouvrez la fenêtre de conversation à assister et entrez dans une conversation textuelle classique.
 2. Cliquez sur « Sélectionner la zone de conversation » et faites glisser pour couvrir les messages.
-3. Cliquez sur « Analyser la sélection actuelle » pour voir le jugement Jev et les réponses candidates.
+3. Cliquez sur « Capturer et relire », corrigez les messages et choisissez l’objectif, puis cliquez sur « Confirmer et analyser ».
 4. Vérifiez et copiez une candidate appropriée, puis décidez vous-même de l'envoi.
 
 Le programme ne lit jamais les bases de données de conversation, ne manipule pas les zones de saisie et n'envoie rien automatiquement. Les transferts d'argent, les paquets rouges et tout contenu transactionnel sont bloqués par les contrôles de sécurité. Les images, les messages vocaux et les cartes citées ne peuvent pas encore être restitués de manière fiable.

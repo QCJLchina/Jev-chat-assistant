@@ -169,7 +169,7 @@ def main() -> None:
             page.locator(".analyze-button").click()
             expect(page.locator(".cancel-analysis")).to_be_visible()
             assert last_call("analyze_text")["payload"] == {"text": text, "preferences": overrides,
-                "context": {"prior_text": "", "background": "", "message_limit": None}}
+                "context": {"prior_text": "", "background": "", "message_limit": None}, "intent": "general"}
             assert page.evaluate("window.__features.snapshot().chat_rect") is None
             assert last_call("start_calibration") is None
             assert page.evaluate("window.__features.snapshot().reply_preferences") == defaults

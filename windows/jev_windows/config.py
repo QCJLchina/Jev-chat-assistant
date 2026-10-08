@@ -19,6 +19,15 @@ LEGACY_CREDENTIAL_TARGET = "JevChatAssistant/OpenRouter"
 DEEPSEEK_CREDENTIAL_TARGET = "JevChatAssistant/DeepSeek"
 MODEL_CREDENTIAL_PREFIX = "JevChatAssistant/Model/"
 
+# Only presentation modules may be hidden; workflow controls are never listed.
+OPTIONAL_MODULES = ("welcome", "model", "messages", "judgment")
+
+
+def normalize_module_visibility(value=None) -> dict[str, bool]:
+    source = value if isinstance(value, dict) else {}
+    return {name: source[name] if type(source.get(name)) is bool else True
+            for name in OPTIONAL_MODULES}
+
 
 def config_dir() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home())
@@ -47,6 +56,7 @@ class AppConfig:
     model_profiles: list[ModelProfile] = field(default_factory=default_profiles)
     active_model_id: str = "deepseek"
     reply_preferences: dict[str, str] = field(default_factory=validate_preferences)
+    module_visibility: dict[str, bool] = field(default_factory=normalize_module_visibility)
 
     def __post_init__(self) -> None:
         if self.selection_mode not in {"window", "screen"}:
@@ -57,6 +67,7 @@ class AppConfig:
             except BindingError:
                 self.window_binding = None
         self.reply_preferences = validate_preferences(self.reply_preferences)
+        self.module_visibility = normalize_module_visibility(self.module_visibility)
 
     @classmethod
     def load(cls) -> "AppConfig":

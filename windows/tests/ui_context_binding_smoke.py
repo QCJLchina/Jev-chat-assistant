@@ -38,10 +38,17 @@ MOCK = r"""
  const begin = (method,payload) => {
  record(method,payload); const id=`task-${calls.length}`;
  patch({task_id:id,input_source:method==='analyze'?'desktop':'text',phase:'judging'});
+ if(window.__contextSmoke.nextCaptureError){
+ window.__contextSmoke.nextCaptureError=false;
+ setTimeout(()=>patch({phase:'error',status:'Fixture capture failed',error:'Fixture capture failed',
+ failed_stage:'capture',retryable_stages:['capture'],
+ selection_binding:{status:'invalid',reason:'binding.unavailable'}}),120);
+ return {ok:true,task_id:id};
+ }
  const error = window.__contextSmoke.nextError ? 'Fixture ranking error' : '';
  window.__contextSmoke.nextError=false;
  setTimeout(()=>patch({phase:'idle',status:'Complete',error,
- failed_stage:error?'rank':null,suggestions:[{text:'Fixture completed',
+ failed_stage:error?'rank':null,retryable_stages:[],suggestions:[{text:'Fixture completed',
  probability:null,confidence:null,recommended:false}],context_stats:{total_messages:32,
  used_messages:Math.min(payload.context.message_limit??32,32),characters:320,
  message_limit:payload.context.message_limit,omitted_messages:32-Math.min(payload.context.message_limit??32,32)}}),120);
@@ -53,6 +60,8 @@ MOCK = r"""
  get_selection_state:async()=>{record('get_selection_state');return selection();},
  analyze:async(preferences,context)=>begin('analyze',{preferences,context}),
  analyze_text:async payload=>begin('analyze_text',payload),
+ retry_analysis:async(task_id,stage)=>{record('retry_analysis',{task_id,stage});
+ const previous=calls.findLast(call=>call.method==='analyze');return begin('analyze',previous.payload);},
  start_calibration:async mode=>{record('start_calibration',mode);patch({phase:'idle'});return {ok:true};},
  set_selection_mode:async mode=>{record('set_selection_mode',mode);patch({selection_mode:mode,
  selection_binding:{status:mode==='window'?'needs_confirmation':'none'},
@@ -184,6 +193,47 @@ def run(page, reports, result):
     page.close()
 
 
+def capture_error_recovery(context, url, reports, result):
+    page = context.new_page()
+    try:
+        page.add_init_script(MOCK + "\nwindow.__contextSmoke.patch({selection_mode:'window',selection_binding:{status:'bound',display_name:'Fixture Alpha'}});")
+        page.goto(url, wait_until='networkidle')
+        analyze = page.locator('.analyze-button')
+        page.get_by_role('button', name=CATALOG['context.supplement'], exact=True).click()
+        prior = page.locator('#context-prior-text')
+        background = page.locator('#context-background')
+        prior.fill(PRIOR)
+        background.fill(BACKGROUND)
+        page.evaluate('window.__contextSmoke.nextCaptureError=true')
+        analyze.click()
+        expect(page.locator('.analysis-recovery')).to_contain_text('Fixture capture failed')
+        expect(analyze).to_be_disabled()
+        expect(page.locator('.retry-actions button')).to_have_count(0)
+        task_id = page.evaluate('window.pywebview.api.get_state().then(s=>s.task_id)')
+        before = page.evaluate('window.__contextSmoke.calls.filter(c=>c.method==="get_selection_state").length')
+        page.evaluate("window.__contextSmoke.patch({selection_binding:{status:'bound',display_name:'Fixture Alpha'}})")
+        expect(analyze).to_be_enabled(timeout=6000)
+        retry_name = CATALOG['feature.retryStage'].replace('{stage}', CATALOG['feature.stageCapture'])
+        retry = page.get_by_role('button', name=retry_name, exact=True)
+        expect(retry).to_be_enabled()
+        assert page.evaluate('window.__contextSmoke.calls.filter(c=>c.method==="get_selection_state").length') > before
+        assert page.evaluate('window.pywebview.api.get_state().then(s=>s.phase)') == 'error'
+        expect(prior).to_have_value(PRIOR)
+        expect(background).to_have_value(BACKGROUND)
+        page.screenshot(path=str(reports/'capture-error-restored.png'), full_page=True)
+        retry.click()
+        expect(page.locator('.suggestion-list')).to_contain_text('Fixture completed')
+        assert page.evaluate('window.__contextSmoke.calls.findLast(c=>c.method==="retry_analysis").payload') == {'task_id':task_id,'stage':'capture'}
+        assert page.evaluate('window.__contextSmoke.calls.filter(c=>["start_calibration","confirm_binding"].includes(c.method)).length') == 0
+        expect(analyze).to_be_enabled()
+        analyze.click()
+        expect(page.locator('.status-line')).to_contain_text('Complete')
+        expect(analyze).to_be_enabled()
+        result['capture_error_restore_enables_analysis_and_retry_retains_context'] = 'passed'
+    finally:
+        page.close()
+
+
 def localized_layout(context, url, reports):
     cases = []
     for language in ('zh-CN','en','ja','ko','fr','ru'):
@@ -260,6 +310,7 @@ def main():
                 page.add_init_script(MOCK)
                 page.goto(args.url, wait_until='networkidle')
                 run(page,reports,result)
+                capture_error_recovery(context,args.url,reports,result)
                 legacy = context.new_page()
                 legacy.on('pageerror', lambda error: errors.append(str(error)))
                 legacy.add_init_script(MOCK + "\nconst api=window.pywebview.api; const get=api.get_state; api.get_state=async()=>{const s=await get();delete s.selection_mode;delete s.selection_revision;delete s.selection_binding;return s;}; delete api.get_selection_state;")

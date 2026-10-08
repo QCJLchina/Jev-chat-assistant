@@ -4,6 +4,10 @@ import { checked, display, errorMessage, languages, locale, m, t } from './i18n'
 import type { BridgeResult, Language, Locale, Message } from './i18n'
 import { version as appVersion } from '../package.json'
 import ContextOptions from './ContextOptions.vue'
+import MessageReview from './MessageReview.vue'
+import type { ReviewMessage } from './MessageReview.vue'
+import { replyIntents, reviewStats } from './review'
+import type { ReplyIntent } from './review'
 import { contextInputLimit, defaultContext, unicodeLength } from './contextOptions'
 import type { AnalysisContext, BindingCandidate, ContextStats, SelectionBinding, SelectionMode } from './contextOptions'
 import ReplyPreferencesFields from './ReplyPreferences.vue'
@@ -17,14 +21,22 @@ import {
 } from '@lucide/vue'
 
 type ProviderPreset = { id: string; name: string; base_url: string; protocol: string; default_model: string; models: string[]; key_site: string; local: boolean }
+type OptionalModule = 'welcome' | 'model' | 'messages' | 'judgment'
+type ModuleVisibility = Record<OptionalModule, boolean>
+const defaultModules: ModuleVisibility = { welcome: true, model: true, messages: true, judgment: true }
+const optionalModules: { id: OptionalModule; label: string }[] = [
+  { id: 'welcome', label: 'layout.welcome' }, { id: 'model', label: 'model.title' },
+  { id: 'messages', label: 'messages.title' }, { id: 'judgment', label: 'insight.title' },
+]
 type Profile = {
   id: string; name: string; base_url: string; model: string; max_tokens: number | null
   key_configured?: boolean; key_required?: boolean; api_key?: string; protocol: string
 }
 type Suggestion = { text: string; probability: number | null; confidence: number | null; recommended: boolean }
-type RetryStage = 'capture' | 'judge' | 'generate' | 'rank'
+type RetryStage = 'capture' | 'judge' | 'generate' | 'rank' | 'rewrite'
 type AnalysisResult = BridgeResult & { task_id?: string }
 type UiState = {
+  module_visibility?: ModuleVisibility
   language: Language; resolved_language: Locale; status_message?: Message; error_message?: Message;
   revision: number; status: string; phase: string; preview: { side: string; text: string }[]
   analysis: Record<string, any> | null; suggestions: Suggestion[]; error: string
@@ -35,6 +47,8 @@ type UiState = {
   provider_presets?: ProviderPreset[]; update_info?: UpdateInfo | null
   reply_preferences: ReplyPreferences; task_id: string | null; input_source: 'desktop' | 'text' | null
   failed_stage: RetryStage | null; retryable_stages: RetryStage[]
+  review_id?: string | null; review_messages?: ReviewMessage[]; task_intent?: ReplyIntent
+  reply_revision?: number; reply_histories?: number[]; ranking_valid?: boolean
 }
 type UpdateInfo = {
   update_available: boolean; latest_version: string; current_version: string;
@@ -44,8 +58,9 @@ type SelectionState = {
   selection_mode: SelectionMode; selection_binding: SelectionBinding
   selection_revision: number; chat_rect: UiState['chat_rect']
 }
-type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info' | 'task_id' | 'input_source' | 'failed_stage' | 'retryable_stages' | 'context_stats' | 'selection_mode' | 'selection_binding' | 'selection_revision' | 'chat_rect'>>
+type Progress = { revision: number } & Partial<Pick<UiState, 'status' | 'phase' | 'preview' | 'analysis' | 'suggestions' | 'error' | 'status_message' | 'error_message' | 'update_info' | 'task_id' | 'input_source' | 'failed_stage' | 'retryable_stages' | 'context_stats' | 'selection_mode' | 'selection_binding' | 'selection_revision' | 'chat_rect' | 'review_id' | 'review_messages' | 'task_intent' | 'reply_revision' | 'reply_histories' | 'ranking_valid'>>
 type Bridge = {
+  set_module_visibility(changes: Partial<ModuleVisibility>): Promise<BridgeResult & { module_visibility: ModuleVisibility }>
   set_language(language: Language): Promise<BridgeResult & { language: Language; resolved_language: Locale }>
   get_state(): Promise<UiState>
   get_progress(knownRevision: number): Promise<Progress>
@@ -57,8 +72,13 @@ type Bridge = {
   set_selection_mode?(mode: SelectionMode): Promise<BridgeResult>
   get_binding_candidates?(): Promise<BridgeResult & { candidates: BindingCandidate[] }>
   confirm_binding?(id: string): Promise<BridgeResult>
-  analyze(preferences?: Partial<ReplyPreferences>, context?: AnalysisContext): Promise<AnalysisResult>
-  analyze_text(payload: { text: string; preferences: ReplyPreferences; context: AnalysisContext }): Promise<AnalysisResult>
+  analyze(preferences?: Partial<ReplyPreferences>, context?: AnalysisContext, intent?: ReplyIntent): Promise<AnalysisResult>
+  analyze_text(payload: { text: string; preferences: ReplyPreferences; context: AnalysisContext; intent?: ReplyIntent }): Promise<AnalysisResult>
+  submit_review(payload: { review_id: string; messages: ReviewMessage[]; preferences: ReplyPreferences; context: AnalysisContext; intent: ReplyIntent }): Promise<AnalysisResult>
+  discard_review(reviewId: string): Promise<BridgeResult>
+  rewrite_reply(taskId: string, index: number, action: string, revision: number): Promise<AnalysisResult>
+  undo_reply(taskId: string, index: number, revision: number): Promise<BridgeResult>
+  rank_replies(taskId: string, revision: number): Promise<AnalysisResult>
   cancel_analysis(taskId: string): Promise<BridgeResult>
   retry_analysis(taskId: string, stage: RetryStage): Promise<AnalysisResult>
   set_on_top(value: boolean): Promise<{ ok: boolean }>
@@ -82,6 +102,22 @@ const initial: UiState = {
   failed_stage: null, retryable_stages: [],
 }
 const state = reactive<UiState>({ ...initial })
+const moduleVisibility = computed(() => ({ ...defaultModules, ...state.module_visibility }))
+const visibilityBusy = ref(false)
+async function setModuleVisibility(changes: Partial<ModuleVisibility>) {
+  if (visibilityBusy.value || busy.value || !bridge()) return
+  visibilityBusy.value = true
+  try {
+    const result = checked(await bridge()!.set_module_visibility(changes))
+    state.module_visibility = result.module_visibility
+  } catch (error) { notify(errorMessage(error), true) }
+  finally { visibilityBusy.value = false }
+}
+async function changeModuleVisibility(id: OptionalModule, event: Event) {
+  const checkbox = event.target as HTMLInputElement
+  await setModuleVisibility({ [id]: checkbox.checked })
+  checkbox.checked = moduleVisibility.value[id]
+}
 const page = ref<'home' | 'settings'>('home')
 const showModel = ref(false)
 const pendingDelete = ref<Profile | null>(null)
@@ -89,6 +125,17 @@ const languageBusy = ref(false)
 const editingId = ref('')
 const busy = ref(false)
 const inputSource = ref<'desktop' | 'text'>('desktop')
+const replyIntent = ref<ReplyIntent>('general')
+const reviewMessages = ref<ReviewMessage[]>([])
+const reviewOriginal = ref<ReviewMessage[]>([])
+const reviewDirty = computed(() => JSON.stringify(reviewMessages.value) !== JSON.stringify(reviewOriginal.value))
+const draftStats = computed(() => state.review_id ? reviewStats(reviewMessages.value, context.value) : null)
+const canSubmitReview = computed(() => !!state.review_id && !operationsLocked.value && !contextTooLong.value
+  && reviewMessages.value.some(m => m.text.trim()) && (draftStats.value?.characters ?? 0) <= textLimit)
+watch(() => state.review_id, () => {
+  reviewOriginal.value = (state.review_messages ?? []).map(m => ({ ...m }))
+  reviewMessages.value = reviewOriginal.value.map(m => ({ ...m }))
+})
 const textInput = ref('')
 const context = ref<AnalysisContext>({ ...defaultContext })
 const contextTooLong = computed(() => unicodeLength(context.value.prior_text) > contextInputLimit || unicodeLength(context.value.background) > contextInputLimit)
@@ -118,15 +165,16 @@ const temporaryOpen = ref(false)
 // Session-only overrides survive navigation and subsequent runs, without saving settings.
 const temporaryOverrides = ref<Partial<ReplyPreferences>>({})
 const effectivePreferences = computed<ReplyPreferences>(() => ({ ...state.reply_preferences, ...temporaryOverrides.value }))
-const analysisRunning = computed(() => ['capturing', 'recognizing', 'judging', 'generating', 'ranking'].includes(state.phase))
+const analysisRunning = computed(() => ['capturing', 'recognizing', 'judging', 'generating', 'ranking', 'rewriting'].includes(state.phase))
 const operationsLocked = computed(() => bindingBusy.value || showBinding.value || analysisRunning.value || state.phase === 'calibrating' || analysisBusy.value || calibrationBusy.value || cancelBusy.value || activeModelBusy.value || busy.value || languageBusy.value || updateBusy.value || updateChecking.value || updateRunning.value || updateReady.value)
 const canAnalyze = computed(() => !operationsLocked.value && !contextTooLong.value && (inputSource.value === 'text'
   ? !!textInput.value.trim() && !textTooLong.value : desktopReady.value))
 const stageLabels = computed<Record<RetryStage, string>>(() => ({
   capture: t('feature.stageCapture'), judge: t('feature.stageJudge'),
   generate: t('feature.stageGenerate'), rank: t('feature.stageRank'),
+  rewrite: t('review.stageRewrite'),
 }))
-const retryStages = computed(() => (['capture', 'judge', 'generate', 'rank'] as RetryStage[])
+const retryStages = computed(() => (['capture', 'judge', 'generate', 'rank', 'rewrite'] as RetryStage[])
   .filter(stage => state.retryable_stages.includes(stage) && (stage !== 'capture' || (state.input_source === 'desktop' && desktopReady.value))))
 const topmost = ref(true)
 const toast = ref<Message | string>('')
@@ -250,6 +298,11 @@ function clearContextSupplements() {
   context.value = { ...context.value, prior_text: '', background: '' }
 }
 function clearAnalysisState() {
+  state.review_id = null
+  state.review_messages = []
+  state.reply_histories = []
+  state.reply_revision = 0
+  state.ranking_valid = false
   state.task_id = null
   state.input_source = null
   state.preview = []
@@ -274,6 +327,7 @@ function applyState(next: UiState) {
   state.retryable_stages = next.retryable_stages ?? []
   state.task_id = next.task_id ?? null
   state.input_source = next.input_source ?? null
+  if (next.review_id && next.input_source) inputSource.value = next.input_source
   state.failed_stage = next.failed_stage ?? null
   if (analysisRunning.value) trackingState = 'analysis'
   state.status_message = next.status_message
@@ -343,13 +397,13 @@ async function refreshCalibrationRectangle() {
 async function pollSelection() {
   const api = bridge()
   if (selectionPolling || page.value !== 'home' || inputSource.value !== 'desktop'
-    || operationsLocked.value || trackingState || polling || state.phase !== 'idle'
+    || operationsLocked.value || trackingState || polling || !['idle', 'error'].includes(state.phase)
     || typeof api?.get_selection_state !== 'function') return
   selectionPolling = true
   try {
     const next = await api.get_selection_state()
-    // An idle poll may finish after the user begins another operation.
-    if (!operationsLocked.value && !trackingState) applySelection(next, true)
+    // Keep recoverable errors fresh; discard a poll if another operation began.
+    if (!operationsLocked.value && !trackingState && ['idle', 'error'].includes(state.phase)) applySelection(next, true)
   } catch { /* A transient descriptor failure must not erase a confirmed selection. */ }
   finally { selectionPolling = false }
 }
@@ -517,6 +571,7 @@ async function saveSettings() {
 async function changeSelectionMode(event: Event) {
   const select = event.target as HTMLSelectElement
   if (operationsLocked.value || typeof bridge()?.set_selection_mode !== 'function') { select.value = selectionMode.value; return }
+  if (!await discardReview()) { select.value = selectionMode.value; return }
   bindingBusy.value = true
   try {
     checked(await bridge()!.set_selection_mode!(select.value as SelectionMode))
@@ -536,6 +591,7 @@ async function refreshBindingCandidates() {
 }
 async function chooseBinding() {
   if (operationsLocked.value || typeof bridge()?.get_binding_candidates !== 'function') return
+  if (!await discardReview()) return
   showBinding.value = true
   await refreshBindingCandidates()
 }
@@ -551,6 +607,7 @@ async function confirmBinding() {
 }
 async function calibrate() {
   if (operationsLocked.value) return
+  if (!await discardReview()) return
   calibrationBusy.value = true
   const previousPhase = state.phase
   state.phase = 'calibrating'
@@ -565,10 +622,52 @@ async function calibrate() {
 }
 async function analyze() {
   if (!canAnalyze.value) return
+  if (reviewDirty.value && !window.confirm(t('review.replaceConfirm'))) return
   await runAnalysis(() => inputSource.value === 'text'
-    ? bridge()!.analyze_text({ text: textInput.value, preferences: { ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }, context: { ...context.value } })
-    : bridge()!.analyze({ ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }, { ...context.value }),
+    ? bridge()!.analyze_text({ text: textInput.value, preferences: { ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }, context: { ...context.value }, intent: replyIntent.value })
+    : bridge()!.analyze({ ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) }, { ...context.value }, replyIntent.value),
   inputSource.value === 'desktop' ? 'capturing' : 'judging', true)
+}
+async function discardReview() {
+  if (!state.review_id) return true
+  if (reviewDirty.value && !window.confirm(t('review.replaceConfirm'))) return false
+  try {
+    checked(await bridge()!.discard_review(state.review_id))
+    await refreshAnalysisProgress()
+    return true
+  } catch (error) { notify(errorMessage(error), true); return false }
+}
+async function switchInput(source: 'desktop' | 'text') {
+  if (source === inputSource.value || operationsLocked.value || !await discardReview()) return
+  inputSource.value = source
+}
+async function navigateSettings() {
+  if (!await discardReview()) return
+  page.value = 'settings'
+}
+async function submitReview() {
+  if (!canSubmitReview.value || !state.review_id) return
+  const payload = { review_id: state.review_id, messages: reviewMessages.value.map(m => ({ ...m })),
+    preferences: { ...(temporaryEnabled.value ? effectivePreferences.value : state.reply_preferences) },
+    context: { ...context.value }, intent: replyIntent.value }
+  await runAnalysis(() => bridge()!.submit_review(payload), 'judging')
+}
+async function rewriteReply(index: number, action: string) {
+  if (operationsLocked.value || !state.task_id) return
+  await runAnalysis(() => bridge()!.rewrite_reply(state.task_id!, index, action, state.reply_revision ?? 0), 'rewriting')
+}
+async function undoReply(index: number) {
+  if (operationsLocked.value || !state.task_id) return
+  analysisBusy.value = true
+  try {
+    checked(await bridge()!.undo_reply(state.task_id, index, state.reply_revision ?? 0))
+    await refreshAnalysisProgress()
+  } catch (error) { notify(errorMessage(error), true) }
+  finally { analysisBusy.value = false }
+}
+async function rankReplies() {
+  if (operationsLocked.value || !state.task_id) return
+  await runAnalysis(() => bridge()!.rank_replies(state.task_id!, state.reply_revision ?? 0), 'ranking')
 }
 async function runAnalysis(start: () => Promise<AnalysisResult>, phase: string, newTask = false) {
   analysisBusy.value = true
@@ -611,7 +710,7 @@ async function cancelAnalysis() {
 async function retryAnalysis(stage: RetryStage) {
   if (operationsLocked.value || !state.task_id || !retryStages.value.includes(stage)) return
   const taskId = state.task_id
-  const phases: Record<RetryStage, string> = { capture: 'capturing', judge: 'judging', generate: 'generating', rank: 'ranking' }
+  const phases: Record<RetryStage, string> = { capture: 'capturing', judge: 'judging', generate: 'generating', rank: 'ranking', rewrite: 'rewriting' }
   await runAnalysis(() => bridge()!.retry_analysis(taskId, stage), phases[stage])
 }
 async function toggleTopmost() {
@@ -687,23 +786,23 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
       </div>
       <div class="top-actions">
         <button class="icon-button" :class="{ selected: topmost }" :title="topmost ? t('common.unpin') : t('common.pin')" @click="toggleTopmost"><Eye :size="17" /></button>
-        <button class="button button-quiet" @click="page = page === 'settings' ? 'home' : 'settings'"><Settings2 :size="16" /> {{ t('common.settings') }}</button>
+        <button class="button button-quiet" @click="page === 'settings' ? page = 'home' : navigateSettings()"><Settings2 :size="16" /> {{ t('common.settings') }}</button>
       </div>
     </header>
 
     <template v-if="page === 'home'">
-      <button v-if="updateInfo?.update_available" class="update-banner" @click="page = 'settings'">
+      <button v-if="updateInfo?.update_available" class="update-banner" @click="navigateSettings">
         <Download :size="16" /><span>{{ t('update.banner', { version: updateInfo.latest_version }) }}</span><ArrowRight :size="15" />
       </button>
-      <section class="welcome-row">
+      <section v-if="moduleVisibility.welcome" class="welcome-row">
         <div><div class="eyebrow">{{ t('home.eyebrow') }} <span class="version-pill">v{{ state.version }}</span></div><h1>{{ t('home.title') }}</h1><p>{{ t('home.subtitle') }}</p></div>
         <div class="jev-badge"><ShieldCheck :size="18" /><span>{{ t('home.safety') }}</span></div>
       </section>
 
       <section class="surface input-source-panel">
         <div class="input-source-toggle" role="group" :aria-label="t('feature.inputSource')">
-          <button class="button" :class="inputSource === 'desktop' ? 'button-primary' : 'button-outline'" :aria-pressed="inputSource === 'desktop'" :disabled="operationsLocked" @click="inputSource = 'desktop'">{{ t('feature.inputDesktop') }}</button>
-          <button class="button" :class="inputSource === 'text' ? 'button-primary' : 'button-outline'" :aria-pressed="inputSource === 'text'" :disabled="operationsLocked" @click="inputSource = 'text'">{{ t('feature.inputText') }}</button>
+          <button class="button" :class="inputSource === 'desktop' ? 'button-primary' : 'button-outline'" :aria-pressed="inputSource === 'desktop'" :disabled="operationsLocked" @click="switchInput('desktop')">{{ t('feature.inputDesktop') }}</button>
+          <button class="button" :class="inputSource === 'text' ? 'button-primary' : 'button-outline'" :aria-pressed="inputSource === 'text'" :disabled="operationsLocked" @click="switchInput('text')">{{ t('feature.inputText') }}</button>
         </div>
         <template v-if="inputSource === 'text'">
           <label class="field-label" for="analysis-text">{{ t('feature.textLabel') }}</label>
@@ -721,7 +820,22 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
           <p class="field-hint">{{ t('feature.temporaryHint') }}</p>
           <button class="button button-quiet" :disabled="operationsLocked" @click="temporaryOverrides = {}; temporaryEnabled = false">{{ t('feature.resetOverrides') }}</button>
         </div>
-        <ContextOptions v-model="context" :disabled="operationsLocked" :stats="state.context_stats" />
+        <label class="field-label" for="reply-intent">{{ t('review.intent') }}</label>
+        <div class="select-wrap"><select id="reply-intent" v-model="replyIntent" :disabled="operationsLocked"><option v-for="intent in replyIntents" :key="intent" :value="intent">{{ t(`review.intent.${intent}`) }}</option></select></div>
+        <ContextOptions v-model="context" :disabled="operationsLocked" :stats="draftStats ?? state.context_stats" />
+      </section>
+
+      <section v-if="state.review_id" class="surface review-panel">
+        <h2>{{ t('review.title') }}</h2><p class="field-hint">{{ t('review.help') }}</p>
+        <MessageReview v-model="reviewMessages" :disabled="operationsLocked" />
+        <p v-if="!reviewMessages.some(m => m.text.trim())" class="text-input-error" role="alert">{{ t('review.empty') }}</p>
+        <p v-if="(draftStats?.characters ?? 0) > textLimit" class="text-input-error" role="alert">{{ t('context.tooLong', { limit: textLimit }) }}</p>
+        <div class="reply-actions">
+          <button class="button button-primary" :disabled="!canSubmitReview" @click="submitReview">{{ t('review.submit') }}</button>
+          <button class="button button-outline" :disabled="operationsLocked" @click="reviewMessages = reviewOriginal.map(m => ({ ...m }))">{{ t('review.restore') }}</button>
+          <button class="button button-outline" :disabled="!canAnalyze" @click="analyze">{{ t('review.recapture') }}</button>
+          <button class="button button-outline" :disabled="operationsLocked" @click="discardReview">{{ t('common.cancel') }}</button>
+        </div>
       </section>
 
       <section v-if="inputSource === 'desktop'" class="setup-card surface">
@@ -734,13 +848,14 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
         </div>
       </section>
 
-      <div class="content-grid">
+      <div class="content-grid" :class="{ 'single-module': !moduleVisibility.model }">
         <section class="surface analysis-card">
           <div class="section-heading"><div class="heading-icon blue"><Sparkles :size="17" /></div><div><h2>{{ t('analysis.title') }}</h2><p>{{ t(inputSource === 'text' ? 'feature.textAnalysisHelp' : 'analysis.help') }}</p></div></div>
           <div class="status-line" :class="statusTone"><span class="status-dot"><LoaderCircle v-if="state.phase !== 'idle' && state.phase !== 'error'" :size="15" class="spin" /><span v-else></span></span><span>{{ display(state.status_message ?? state.status) }}</span></div>
-          <button class="button button-primary analyze-button" :disabled="!canAnalyze" @click="analyze"><Sparkles :size="17" />{{ analysisRunning || analysisBusy ? t('analysis.busy') : t(inputSource === 'text' ? 'feature.analyzeText' : 'analysis.start') }}<ArrowRight v-if="!analysisRunning && !analysisBusy" :size="17" /></button>
+          <button class="button button-primary analyze-button" :disabled="!canAnalyze" @click="analyze"><Sparkles :size="17" />{{ analysisRunning || analysisBusy ? t('analysis.busy') : t(inputSource === 'text' ? 'review.parse' : 'review.capture') }}<ArrowRight v-if="!analysisRunning && !analysisBusy" :size="17" /></button>
           <div v-if="state.input_source" class="analysis-task-meta">
             <span>{{ t('feature.taskSource', { source: state.input_source === 'text' ? t('feature.inputText') : t('feature.inputDesktop') }) }}</span>
+            <span v-if="!state.review_id">{{ t('review.intent') }}：{{ t(`review.intent.${state.task_intent ?? 'general'}`) }}</span>
           </div>
           <button v-if="analysisRunning && state.task_id" class="button button-outline cancel-analysis" :disabled="cancelBusy || analysisBusy" @click="cancelAnalysis"><X :size="15" />{{ cancelBusy ? t('feature.cancelling') : t('feature.cancelAnalysis') }}</button>
           <div v-if="!analysisRunning && (state.failed_stage || state.error || state.error_message || retryStages.length)" class="analysis-recovery" role="status">
@@ -751,22 +866,22 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
           <div class="privacy-note"><LockKeyhole :size="14" />{{ t(inputSource === 'text' ? 'feature.textPrivacy' : 'analysis.privacy') }}</div>
         </section>
 
-        <section class="surface model-card">
+        <section v-if="moduleVisibility.model" class="surface model-card">
           <div class="section-heading"><div class="heading-icon violet"><Cpu :size="17" /></div><div><h2>{{ t('model.title') }}</h2><p>{{ t('model.help') }}</p></div></div>
           <label class="field-label" for="active-model">{{ t('model.current') }}</label>
           <div class="select-wrap"><select id="active-model" v-model="state.active_model_id" :disabled="operationsLocked || !state.profiles.length" @change="selectActiveModel"><option value="" disabled>{{ t('model.choose') }}</option><option v-for="profile in state.profiles" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model }}</option></select><ChevronDown :size="16" /></div>
           <div v-if="activeProfile" class="model-meta"><span class="online-dot"></span><span>{{ activeProfile.name }}</span><span class="meta-separator">/</span><span class="model-id">{{ activeProfile.model }}</span></div>
-          <button class="text-action" @click="page = 'settings'"><Settings2 :size="15" />{{ t('model.manage') }} <ArrowRight :size="14" /></button>
+          <button class="text-action" @click="navigateSettings"><Settings2 :size="15" />{{ t('model.manage') }} <ArrowRight :size="14" /></button>
         </section>
       </div>
 
-      <div class="results-grid">
-        <section class="surface result-card messages-card">
+      <div v-if="moduleVisibility.messages || moduleVisibility.judgment" class="results-grid" :class="{ 'single-module': !moduleVisibility.messages || !moduleVisibility.judgment }">
+        <section v-if="moduleVisibility.messages" class="surface result-card messages-card">
           <div class="result-heading"><div><span class="eyebrow">{{ t('messages.eyebrow') }}</span><h2>{{ t('messages.title') }}</h2></div><span class="count-pill">{{ t('messages.count', { count: state.preview.length }) }}</span></div>
           <div v-if="state.preview.length" class="message-list"><div v-for="(message, index) in state.preview" :key="index" class="message-row" :class="message.side"><span class="message-avatar">{{ message.side === 'me' ? t('messages.me') : t('messages.avatarOther') }}</span><div class="message-bubble"><span class="speaker">{{ message.side === 'me' ? t('messages.me') : t('messages.other') }}</span><span>{{ message.text }}</span></div></div></div>
           <div v-else class="empty-state"><div class="empty-icon"><MessageCircle :size="20" /></div><span>{{ t('messages.empty') }}</span></div>
         </section>
-        <section class="surface result-card judgement-card">
+        <section v-if="moduleVisibility.judgment" class="surface result-card judgement-card">
           <div class="result-heading"><div><span class="eyebrow">{{ t('insight.eyebrow') }}</span><h2>{{ t('insight.title') }}</h2></div><span v-if="state.analysis" class="confidence-pill"><ShieldCheck :size="14" /> {{ t('common.done') }}</span></div>
           <template v-if="state.analysis">
             <div class="insight-primary"><div class="insight-label">{{ t('insight.intent') }}</div><div class="intent-value">{{ intentLabels[state.analysis.true_intent] || state.analysis.true_intent || '—' }}</div><div class="danger-meter"><span>{{ t('insight.danger') }}</span><strong>{{ danger(state.analysis.danger_level) }}</strong></div></div>
@@ -779,8 +894,22 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 
       <section class="surface suggestions-section">
         <div class="result-heading"><div><span class="eyebrow">{{ t('replies.eyebrow') }}</span><h2>{{ t('replies.title') }}</h2></div><span class="suggestion-caption">{{ t('replies.caption') }}</span></div>
-        <div v-if="state.suggestions.length" class="suggestion-list"><article v-for="(suggestion, index) in state.suggestions" :key="index" class="suggestion-item"><span class="suggestion-number">0{{ index + 1 }}</span><div class="suggestion-copy"><p>{{ suggestion.text }}<span v-if="suggestion.recommended" class="recommend-badge">{{ t('replies.recommended') }}</span></p><div class="suggestion-confidence"><span>{{ t('replies.score') }} <strong>{{ percent(suggestion.probability) }}</strong></span><span v-if="suggestion.confidence !== null">{{ t('replies.confidence') }} <strong>{{ percent(suggestion.confidence) }}</strong></span></div></div><button class="copy-button" @click="copyReply(suggestion.text)"><Copy :size="15" />{{ t('common.copy') }}</button></article></div>
-        <div v-else class="suggestion-empty"><Sparkles :size="16" />{{ state.profiles.length ? t('replies.empty') : t('replies.setup') }}<button class="inline-link" @click="page = 'settings'">{{ t('replies.configure') }} <ArrowRight :size="13" /></button></div>
+        <div v-if="state.suggestions.length && state.ranking_valid === false" class="reply-actions"><p>{{ t('review.pendingRank') }}</p><button class="button button-outline" :disabled="operationsLocked" @click="rankReplies">{{ t('review.rank') }}</button></div>
+        <div v-if="state.suggestions.length" class="suggestion-list">
+          <article v-for="(suggestion, index) in state.suggestions" :key="index" class="suggestion-item">
+            <span class="suggestion-number">0{{ index + 1 }}</span>
+            <div class="suggestion-copy">
+              <p>{{ suggestion.text }}<span v-if="suggestion.recommended" class="recommend-badge">{{ t('replies.recommended') }}</span><span v-if="state.reply_histories?.[index]" class="recommend-badge">{{ t('review.rewritten') }}</span></p>
+              <div v-if="state.ranking_valid !== false" class="suggestion-confidence"><span>{{ t('replies.score') }} <strong>{{ percent(suggestion.probability) }}</strong></span><span v-if="suggestion.confidence !== null">{{ t('replies.confidence') }} <strong>{{ percent(suggestion.confidence) }}</strong></span></div>
+              <div class="reply-actions rewrite-actions">
+                <button v-for="action in ['shorter', 'natural', 'gentle']" :key="action" class="button button-outline" :disabled="operationsLocked" @click="rewriteReply(index, action)">{{ t(`review.${action}`) }}</button>
+                <button v-if="state.reply_histories?.[index]" class="button button-outline" :disabled="operationsLocked" @click="undoReply(index)">{{ t('review.undo') }}</button>
+              </div>
+            </div>
+            <button class="copy-button" @click="copyReply(suggestion.text)"><Copy :size="15" />{{ t('common.copy') }}</button>
+          </article>
+        </div>
+        <div v-else class="suggestion-empty"><Sparkles :size="16" />{{ state.profiles.length ? t('replies.empty') : t('replies.setup') }}<button class="inline-link" @click="navigateSettings">{{ t('replies.configure') }} <ArrowRight :size="13" /></button></div>
       </section>
     </template>
 
@@ -789,6 +918,16 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
       <div class="settings-layout">
         <nav class="settings-nav"><a class="nav-item current"><ShieldCheck :size="16" /> {{ t('settings.judge') }} <ChevronRight :size="15" /></a><a class="nav-item"><Bot :size="16" /> {{ t('model.title') }} <ChevronRight :size="15" /></a><a class="nav-item"><MessageCircle :size="16" /> {{ t('settings.preferences') }} <ChevronRight :size="15" /></a><div class="nav-tip"><LockKeyhole :size="15" /><span>{{ t('settings.keyNote') }}</span></div></nav>
         <div class="settings-content">
+          <section class="surface settings-panel module-visibility-panel">
+            <h2>{{ t('layout.title') }}</h2>
+            <p class="field-hint">{{ t('layout.hint') }}</p>
+            <label v-for="item in optionalModules" :key="item.id" class="module-toggle" :for="`module-${item.id}`">
+              <input :id="`module-${item.id}`" type="checkbox" :checked="moduleVisibility[item.id]" :disabled="visibilityBusy || busy" @change="changeModuleVisibility(item.id, $event)" />
+              {{ t(item.label) }}
+            </label>
+            <p class="field-hint">{{ t('layout.core') }}</p>
+            <button class="button button-outline" :disabled="visibilityBusy || busy" @click="setModuleVisibility({ ...defaultModules })">{{ t('layout.reset') }}</button>
+          </section>
           <section class="surface settings-panel language-panel">
             <h2><label for="interface-language">{{ t('language.title') }}</label></h2>
             <div class="select-wrap"><select id="interface-language" :value="state.language" :disabled="languageBusy || busy" @change="changeLanguage">
@@ -913,7 +1052,12 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
 .setup-card{flex-wrap:wrap;gap:16px}
 .settings-fields{min-width:0;margin:0;padding:0;border:0}
 .input-source-panel{padding:17px 19px;margin-bottom:14px}
-.input-source-toggle,.retry-actions{display:flex;flex-wrap:wrap;gap:8px}
+.input-source-toggle,.retry-actions,.reply-actions{display:flex;flex-wrap:wrap;gap:8px}
+.content-grid.single-module,.results-grid.single-module{grid-template-columns:minmax(0,1fr)}
+.module-toggle{display:flex;align-items:center;gap:10px;margin:14px 0;font-size:13px;color:#52647b}
+.module-toggle input{width:16px;height:16px;accent-color:#1499ef}
+.reply-actions .button{font-size:11px;padding:8px 10px}
+.review-panel{padding:24px;margin-bottom:20px}.review-panel h2{font-size:18px;margin:0}.rewrite-actions{margin-top:12px}
 .text-input-meta{gap:12px;align-items:flex-start;line-height:1.6}
 .text-input-meta span:last-child{flex-shrink:0}
 .text-input-error{color:#bc5d55;font-size:12px;line-height:1.6}
