@@ -1,6 +1,6 @@
 # Jev 对话助手（Windows）
 
-**版本：v1.4.0** · [下载 Windows 版](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.4.0)
+**版本：v1.4.1** · [下载 Windows 版](https://github.com/QCJLchina/Jev-chat-assistant/releases/tag/v1.4.1)
 
 Windows 桌面版使用 Vue 3 + TypeScript 界面和 pywebview 窗口，保留 Python 本地 OCR、Jev 判断、Windows 凭据管理器和本地安全检查。它可框选桌面上的任意聊天应用，不要求微信运行；不读取微信数据库，不注入微信进程，也不调用微信接口。
 

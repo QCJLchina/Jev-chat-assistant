@@ -58,7 +58,7 @@ def main():
             page.wait_for_function("window.pywebview?.api?.submit_review")
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
-            expect(page.locator(".version-pill")).to_have_text("v1.4.0")
+            expect(page.locator(".version-pill")).to_have_text("v1.4.1")
             page.get_by_role("button", name="Paste text", exact=True).click()
             page.locator("#analysis-text").fill("me: Synthetic hello\nother: Synthetic greeting")
             page.locator(".analyze-button").click()
@@ -119,7 +119,7 @@ def main():
             expect(page.locator(".messages-card")).to_be_visible()
             result["module_visibility_persist_restore_core_protection"] = "passed"
             assert not errors, errors
-            result.update(status="passed", version="1.4.0", review_edit_intent_empty_discard="passed",
+            result.update(status="passed", version="1.4.1", review_edit_intent_empty_discard="passed",
                           original_transaction_guard="passed")
     except BaseException as exc:
         result.update(status="failed", error=repr(exc))
