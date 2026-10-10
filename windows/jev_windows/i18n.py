@@ -89,6 +89,19 @@ class Message:
         return hash(self._identity())
 
 
+class LocalizedError(Exception):
+    """An error whose text is this app's own localized message, never input data.
+
+    Raise it when the user should see a fixed, translatable explanation (for
+    example a failed rewrite stage) instead of the generic collapsed message.
+    It always carries a ``Message`` so ``describe()`` keeps the key and params.
+    """
+
+    def __init__(self, message: Message):
+        super().__init__(message)
+        self.message = message
+
+
 def msg(key: str, **params) -> Message:
     return Message(key, **params)
 
@@ -99,7 +112,10 @@ def describe(value) -> dict | None:
     if isinstance(value, Exception):
         if value.args and isinstance(value.args[0], Message):
             return value.args[0].message
-        return {"key": "error.unexpected", "params": {"detail": str(value)}}
+        # Unknown exceptions collapse to a fixed generic message: str(exc) can
+        # carry OCR text, model output, file paths or URLs. Known Message errors
+        # keep their key and params above.
+        return {"key": "error.unexpectedGeneric", "params": {}}
     return None
 
 

@@ -26,6 +26,8 @@ def normalize_context(payload=None) -> dict:
         raise ValueError(msg("context.invalidMessageLimit"))
     if len(prior_text) > MAX_TEXT_LENGTH:
         raise ValueError(msg("context.priorTooLong"))
+    if len(background) > MAX_TEXT_LENGTH:
+        raise ValueError(msg("context.tooLong"))
     return {"prior_text": prior_text, "background": background, "message_limit": message_limit}
 
 

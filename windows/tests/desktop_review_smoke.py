@@ -158,7 +158,10 @@ def main():
             assert not state()["ranking_valid"]
             assert state()["suggestions"][1]["text"] == "Fixture second"
             first.get_by_role("button", name="More natural", exact=True).click()
-            expect(page.locator(".analysis-recovery")).to_contain_text("Synthetic retryable failure")
+            # Failure reasons from model responses are never surfaced; the panel
+            # shows a fixed localized message plus a retry action.
+            expect(page.locator(".analysis-recovery")).to_contain_text("Rewrite failed")
+            assert "Synthetic retryable failure" not in page.locator(".analysis-recovery").inner_text()
             assert state()["suggestions"][0]["text"] == "Fixture first / shorter"
             page.locator(".retry-actions").get_by_role("button", name="Retry Rewrite", exact=True).click()
             expect(first).to_contain_text("Fixture first / shorter / natural")

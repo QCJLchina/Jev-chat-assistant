@@ -104,7 +104,7 @@ def _request_json(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:240]
+        exc.close()
         if exc.code in {404, 405} and path == "models":
             raise DeepSeekError(msg("error.noModelsEndpoint")) from None
         message = {
@@ -112,12 +112,12 @@ def _request_json(
             403: msg("error.model403"),
             402: msg("error.model402"),
             429: msg("error.model429"),
-        }.get(exc.code, msg("error.modelHttp", status=exc.code, detail=detail))
+        }.get(exc.code, msg("error.modelHttp", status=exc.code))
         # Carry the status code as machine-readable data. Callers must not have to
         # parse it back out of localized text, which changes with the UI language.
         raise DeepSeekError(message, exc.code) from None
     except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
-        raise DeepSeekError(msg("error.modelConnect", detail=str(exc))) from None
+        raise DeepSeekError(msg("error.modelConnect")) from None
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise DeepSeekError(msg("error.modelData")) from exc
 

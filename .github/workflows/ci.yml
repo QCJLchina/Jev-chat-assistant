@@ -114,6 +114,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw '新增功能冒烟测试失败' }
             python windows/tests/ui_module_visibility_smoke.py
             if ($LASTEXITCODE -ne 0) { throw '模块显示开关冒烟测试失败' }
+            python windows/tests/ui_security_smoke.py
+            if ($LASTEXITCODE -ne 0) { throw '安全界面冒烟测试失败' }
             python windows/tests/ui_context_binding_smoke.py --report-dir context-binding-smoke-report
             if ($LASTEXITCODE -ne 0) { throw '完整上下文与窗口绑定界面测试失败' }
             python windows/tests/ui_localization_smoke.py

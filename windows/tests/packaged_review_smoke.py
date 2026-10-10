@@ -64,6 +64,17 @@ def main():
             page.locator(".analyze-button").click()
             expect(page.locator(".review-panel")).to_be_visible()
             assert page.evaluate("window.pywebview.api.get_progress(-1)")["analysis"] is None
+            oversized = page.evaluate("""async () => {
+                const before = await window.pywebview.api.get_progress(-1);
+                const result = await window.pywebview.api.submit_review({review_id:before.review_id,
+                    messages:[{side:'other',text:' '.repeat(200001)}]});
+                const after = await window.pywebview.api.get_progress(-1);
+                return {result, unchanged:before.review_id===after.review_id, analysis:after.analysis};
+            }""")
+            assert oversized['result']['ok'] is False
+            assert oversized['result']['error_message']['key'] == 'review.capacityExceeded'
+            assert oversized['unchanged'] and oversized['analysis'] is None
+            result['oversized_draft_kept_without_analysis'] = 'passed'
             page.locator("#reply-intent").select_option("clarify")
             expect(page.locator("#reply-intent")).to_have_value("clarify")
             page.locator("#review-text-0").fill("Corrected synthetic hello")

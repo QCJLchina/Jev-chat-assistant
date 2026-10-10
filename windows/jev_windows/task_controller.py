@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from . import analysis as workflow
 from .config import AppConfig, ModelProfile, load_api_key, load_model_api_key
 from .deepseek_client import is_local_base_url
-from .i18n import msg, translate
+from .i18n import LocalizedError, Message as LocalizedMessage, msg, translate
 from .input_text import parse_text
 from .reply_preferences import resolve_preferences, validate_preferences
 from .models import Analysis, ChatSnapshot, Message
 from .reply_intent import validate_intent
 from .deepseek_client import rewrite_reply
 from .context import normalize_context, compose_context
+from .review_limits import validate_draft
 from .safety import assert_safe_chat
 
 
@@ -178,8 +179,8 @@ class AnalysisController:
                 raise ValueError(msg("error.busy"))
             if not old.review or old.original_snapshot is None:
                 raise ValueError(msg("feature.taskExpired"))
-            if not isinstance(messages, list):
-                raise ValueError(msg("review.invalidMessages"))
+            validate_draft(messages, wire=True)
+            context = normalize_context(context)
             corrected = []
             for message in messages:
                 if (not isinstance(message, dict) or message.get("side") not in {"me", "other"}
@@ -295,7 +296,10 @@ class AnalysisController:
                 job.rewrite_request = None
                 self._changed_replies(job)
         except Exception as exc:
-            self.publish(job, phase="idle", status=msg("review.rewriteFailed"), error=exc,
+            # The user needs to know a rewrite failed and can retry; the cause
+            # text stays out of the bridge. Known local errors keep their message.
+            failure = exc.args[0] if exc.args and isinstance(exc.args[0], LocalizedMessage) else msg("review.rewriteFailed")
+            self.publish(job, phase="idle", status=msg("review.rewriteFailed"), error=LocalizedError(failure),
                          failed_stage="rewrite", retryable_stages=["rewrite"])
 
     def _checkpoint(self, job, **values):
@@ -316,6 +320,7 @@ class AnalysisController:
                 if not self._checkpoint(job, snapshot=snapshot, stage="judge"):
                     return
             if job.review:
+                validate_draft(job.snapshot.messages, raw_text=job.snapshot.raw_text)
                 if job.source == "desktop" and job.settings.allowed_titles and not any(t in job.snapshot.title for t in job.settings.allowed_titles):
                     raise RuntimeError(msg("error.allowlist", name=job.snapshot.title))
                 if not self._checkpoint(job, original_snapshot=job.snapshot):
@@ -360,6 +365,10 @@ class AnalysisController:
                          ranking_valid=True, reply_revision=job.reply_revision,
                          reply_histories=[len(h) for h in job.histories], retryable_stages=[], failed_stage=None)
         except Exception as exc:
+            known = exc.args[0] if exc.args and isinstance(exc.args[0], LocalizedMessage) else None
+            surfaced = known if known is not None else msg("error.unexpectedGeneric")
             self.publish(job, phase="idle" if job.stage == "rank" else "error",
-                         status=msg("status.rankFailed", detail=exc) if job.stage == "rank" else exc,
-                         error=exc, failed_stage=job.stage, retryable_stages=[job.stage])
+                         status=msg("status.rankFailed") if job.stage == "rank" else exc,
+                         error=LocalizedError(msg("status.rankFailed") if job.stage == "rank" and known is None
+                                              else surfaced),
+                         failed_stage=job.stage, retryable_stages=[job.stage])

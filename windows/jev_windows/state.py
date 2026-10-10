@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 
-from .i18n import describe, msg, render
+from .i18n import Message, describe, msg, render
 
 
 class ProgressState:
@@ -56,7 +56,7 @@ class ProgressState:
                 if field in updates:
                     updates[field + "_message"] = describe(updates[field])
                     if isinstance(updates[field], Exception):
-                        updates[field] = str(updates[field])
+                        updates[field] = render(updates[field + "_message"], self.language) if isinstance(updates[field], Message) else render(describe(updates[field]), self.language)
             self._state.update(updates)
             self._revision += 1
 

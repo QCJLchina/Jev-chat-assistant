@@ -115,6 +115,7 @@ def test_apply_requires_the_ready_phase(service):
 
 def test_apply_delegates_to_the_updater_once_ready(service, monkeypatch):
     installed = []
+    service._verified_ready = True
     service.progress.update(phase="updateReady")
     monkeypatch.setattr(update_service, "apply_staged_update", lambda path: installed.append(path))
     monkeypatch.setattr(update_service, "app_install_dir", lambda: "INSTALL")

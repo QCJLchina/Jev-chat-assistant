@@ -4,6 +4,15 @@ import { unicodeLength } from './contextOptions'
 
 export type ReplyIntent = 'general' | 'decline' | 'clarify' | 'close' | 'deescalate'
 export const replyIntents: ReplyIntent[] = ['general', 'decline', 'clarify', 'close', 'deescalate']
+export function draftWithinCapacity(messages: ReviewMessage[]): boolean {
+  if (messages.length > 20000) return false
+  let characters = 0
+  for (const message of messages) {
+    characters += unicodeLength(message.text)
+    if (characters > 200000) return false
+  }
+  return true
+}
 export function reviewStats(messages: ReviewMessage[], context: AnalysisContext): ContextStats {
   // Mirrors the backend prefix parser for preview statistics only; backend is authoritative.
   const prior: string[] = []

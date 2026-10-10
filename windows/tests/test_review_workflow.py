@@ -78,6 +78,43 @@ def test_review_unicode_budget(rig, size, ok):
         assert rig.calls == []
 
 
+@pytest.mark.parametrize("kind", ["count", "characters", "background"])
+def test_oversized_review_rejected_before_credentials_or_scanning(rig, monkeypatch, kind):
+    task = prepare(rig)
+    original = rig.controller.job.original_snapshot
+    monkeypatch.setattr(module, "load_api_key", lambda: pytest.fail("credentials read"))
+    monkeypatch.setattr(module, "compose_context", lambda *a: pytest.fail("context composed"))
+    messages = [{"side": "other", "text": " "} for _ in range(20001)] if kind == "count" else [
+        {"side": "other", "text": "😀" * (200001 if kind == "characters" else 1)}]
+    with pytest.raises(ValueError):
+        rig.controller.submit_review(task, messages, rig.settings, "en",
+            context={"message_limit": 10, "background": "x" * (20001 if kind == "background" else 0)})
+    assert rig.controller.job.original_snapshot is original
+    assert rig.progress.get("review_id") == task
+    assert rig.calls == []
+
+
+def test_full_draft_capacity_can_select_last_ten(rig):
+    task = prepare(rig)
+    messages = [{"side": "other", "text": "😀" * 10} for _ in range(20000)]
+    confirm(rig, task, messages, context={"message_limit": 10})
+    assert rig.progress.get("context_stats")["characters"] == 100
+    assert len(rig.calls[0][1][0].messages) == 10
+
+
+@pytest.mark.parametrize("raw_only", [False, True])
+def test_oversized_ocr_never_enters_editor(rig, monkeypatch, raw_only):
+    rig.settings.chat_rect = Rect(0, 0, 800, 600)
+    snapshot = ChatSnapshot("chat", [Message("other", "x" if raw_only else "x" * 200001)],
+                            "x" * 200001 if raw_only else "")
+    monkeypatch.setattr(module.workflow.AnalysisService, "capture", lambda *a, **k: snapshot)
+    rig.controller.start(rig.settings, "en", review=True)
+    join(rig.workers[-1])
+    assert rig.progress.get("review_id") is None
+    assert rig.progress.get("review_messages") == []
+    assert rig.calls == []
+
+
 @pytest.mark.parametrize("messages", [[], [{"side": "me", "text": " "}], [{"side": "bad", "text": "x"}], [{"side": "me", "text": 3}], {}])
 def test_invalid_review_does_not_consume_draft(rig, messages):
     task = prepare(rig)

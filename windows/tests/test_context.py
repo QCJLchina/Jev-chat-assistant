@@ -115,7 +115,7 @@ def test_safety_scans_all_inputs_before_range_and_size_checks(where):
     elif where == "dropped_prior":
         options["prior_text"] = "other: 付款"
     else:
-        options["background"] = "界" * 20_001 + "付款"
+        options["background"] = "界" * 19_998 + "付款"
     with pytest.raises(RuntimeError) as caught:
         compose_context(source, options)
     assert describe(caught.value) == {"key": "error.sensitive", "params": {"word": "付款"}}

@@ -97,7 +97,7 @@ class DesktopApi:
             try:
                 candidate.save()
             except Exception as exc:
-                raise RuntimeError(msg("language.failed", detail=str(exc))) from None
+                raise RuntimeError(msg("language.failed")) from None
             self.settings.language = language
             self.resolved_language = resolved
             self.progress.set_language(resolved)
@@ -328,7 +328,7 @@ class DesktopApi:
                 try:
                     select_region(client, self.resolved_language, finish)
                 except Exception as exc:
-                    self._set_progress(phase="error", status=msg("status.overlayFailed", detail=exc), error=exc)
+                    self._set_progress(phase="error", status=msg("status.overlayFailed"), error=exc)
                     if self.window:
                         self.window.show()
                         self.window.restore()
@@ -528,7 +528,7 @@ def main() -> None:
     try:
         webview.start(gui="edgechromium", debug=False)
     except Exception as exc:
-        show_startup_error(api.resolved_language, translate("error.webview", api.resolved_language, detail=str(exc)))
+        show_startup_error(api.resolved_language, translate("error.webview", api.resolved_language))
 
 
 if __name__ == "__main__":

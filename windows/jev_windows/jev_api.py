@@ -19,7 +19,9 @@ JEV_MODEL = "jev-latest"
 
 
 class JevApiError(RuntimeError):
-    pass
+    def __init__(self, message, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class JevCancelledError(JevApiError):
@@ -62,24 +64,24 @@ def _post(key: str, body: dict, timeout: float = 20, *, cancel_event: Event | No
         except urllib.error.HTTPError as exc:
             _check_cancelled(cancel_event)
             status = exc.code
-            body_text = exc.read().decode("utf-8", errors="replace")[:300]
+            exc.close()
             if status in (429, 500, 502, 503, 529) and attempt == 0:
                 _retry_wait(cancel_event)
                 continue
             readable = {
                 401: msg("error.jev401"),
                 403: msg("error.jev403"),
-                422: msg("error.jev422", detail=body_text),
+                422: msg("error.jev422"),
                 429: msg("error.jev429"),
-            }.get(status, msg("error.jevHttp", status=status, detail=body_text))
-            raise JevApiError(readable) from None
+            }.get(status, msg("error.jevHttp", status=status))
+            raise JevApiError(readable, status) from None
         except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
             _check_cancelled(cancel_event)
             last_error = exc
             if attempt == 0:
                 _retry_wait(cancel_event)
                 continue
-    raise JevApiError(msg("error.jevConnect", detail=str(last_error)))
+    raise JevApiError(msg("error.jevConnect")) from None
 
 
 def _state(snapshot: ChatSnapshot, relationship: str) -> dict:

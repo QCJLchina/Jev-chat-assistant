@@ -31,7 +31,8 @@ def test_missing_translation_uses_chinese_and_parameters_are_not_reinterpreted(m
     del catalogs["fr"]["common.save"]
     monkeypatch.setattr(i18n, "catalog", lambda locale: catalogs[locale])
     assert i18n.translate("common.save", "fr") == "保存"
-    assert "{status}" in i18n.translate("error.modelHttp", "en", status=500, detail="{status}")
+    assert "{status}" not in i18n.translate("error.modelHttp", "en", status=500, detail="{status}")
+    assert "500" in i18n.translate("error.modelHttp", "en", status=500, detail="{status}")
 
 
 def test_message_is_not_a_string_so_it_cannot_be_render_stale():
@@ -67,7 +68,7 @@ def test_nested_message_parameters_survive_render(monkeypatch):
 def test_exception_wrapping_a_message_describes_to_that_message():
     failure = RuntimeError(i18n.msg("error.jev401"))
     assert i18n.describe(failure)["key"] == "error.jev401"
-    assert i18n.describe(ValueError("plain")) == {"key": "error.unexpected", "params": {"detail": "plain"}}
+    assert i18n.describe(ValueError("plain")) == {"key": "error.unexpectedGeneric", "params": {}}
 
 
 @pytest.mark.parametrize("system,expected", [
@@ -170,7 +171,7 @@ def test_structured_errors_and_nested_failures_remain_translatable(api):
     failure = RuntimeError(i18n.msg("error.jev401"))
     api._set_progress(status=i18n.msg("status.rankFailed", detail=failure))
     api.set_language("fr")
-    assert i18n.translate("error.jev401", "fr") in api.get_progress()["status"]
+    assert i18n.translate("status.rankFailed", "fr") in api.get_progress()["status"]
     api._set_progress(phase="error", status=failure, error=failure)
     api.set_language("ja")
     current = api.get_progress()

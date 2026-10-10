@@ -6,7 +6,7 @@ import { version as appVersion } from '../package.json'
 import ContextOptions from './ContextOptions.vue'
 import MessageReview from './MessageReview.vue'
 import type { ReviewMessage } from './MessageReview.vue'
-import { replyIntents, reviewStats } from './review'
+import { replyIntents, reviewStats, draftWithinCapacity } from './review'
 import type { ReplyIntent } from './review'
 import { contextInputLimit, defaultContext, unicodeLength } from './contextOptions'
 import type { AnalysisContext, BindingCandidate, ContextStats, SelectionBinding, SelectionMode } from './contextOptions'
@@ -52,7 +52,7 @@ type UiState = {
 }
 type UpdateInfo = {
   update_available: boolean; latest_version: string; current_version: string;
-  download_url: string; size: number; sha256?: string
+  download_url: string; size: number; sha256?: string; installable?: boolean; blocked_reason?: string | null
 }
 type SelectionState = {
   selection_mode: SelectionMode; selection_binding: SelectionBinding
@@ -130,8 +130,9 @@ const reviewMessages = ref<ReviewMessage[]>([])
 const reviewOriginal = ref<ReviewMessage[]>([])
 const reviewDirty = computed(() => JSON.stringify(reviewMessages.value) !== JSON.stringify(reviewOriginal.value))
 const draftStats = computed(() => state.review_id ? reviewStats(reviewMessages.value, context.value) : null)
+const draftCapacityOk = computed(() => draftWithinCapacity(reviewMessages.value))
 const canSubmitReview = computed(() => !!state.review_id && !operationsLocked.value && !contextTooLong.value
-  && reviewMessages.value.some(m => m.text.trim()) && (draftStats.value?.characters ?? 0) <= textLimit)
+  && draftCapacityOk.value && reviewMessages.value.some(m => m.text.trim()) && (draftStats.value?.characters ?? 0) <= textLimit)
 watch(() => state.review_id, () => {
   reviewOriginal.value = (state.review_messages ?? []).map(m => ({ ...m }))
   reviewMessages.value = reviewOriginal.value.map(m => ({ ...m }))
@@ -231,7 +232,7 @@ async function checkForUpdates(manual = true) {
   } finally { updateChecking.value = false }
 }
 async function startUpdateDownload() {
-  if (operationsLocked.value) return
+  if (operationsLocked.value || updateInfo.value?.installable !== true) return
   updateBusy.value = true
   updateProgress.value = 0
   trackingState = 'update'
@@ -830,6 +831,7 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
         <MessageReview v-model="reviewMessages" :disabled="operationsLocked" />
         <p v-if="!reviewMessages.some(m => m.text.trim())" class="text-input-error" role="alert">{{ t('review.empty') }}</p>
         <p v-if="(draftStats?.characters ?? 0) > textLimit" class="text-input-error" role="alert">{{ t('context.tooLong', { limit: textLimit }) }}</p>
+        <p v-if="state.review_id && !draftCapacityOk" class="text-input-error" role="alert">{{ t('review.capacityExceeded') }}</p>
         <div class="reply-actions">
           <button class="button button-primary" :disabled="!canSubmitReview" @click="submitReview">{{ t('review.submit') }}</button>
           <button class="button button-outline" :disabled="operationsLocked" @click="reviewMessages = reviewOriginal.map(m => ({ ...m }))">{{ t('review.restore') }}</button>
@@ -978,8 +980,9 @@ onBeforeUnmount(() => { window.removeEventListener('pywebviewready', loadState);
             <div v-if="updatePercent !== null" class="update-progress"><div class="update-progress-fill" :style="{ width: updatePercent + '%' }"></div></div>
             <div v-if="updateInfo?.update_available && !updateRunning && !updateReady" class="update-available-row">
               <span>{{ t('update.availableLong', { version: updateInfo.latest_version }) }}</span>
-              <button class="button button-primary" :disabled="operationsLocked" @click="startUpdateDownload"><Download :size="15" />{{ t('update.download') }}</button>
+              <button class="button button-primary" :disabled="operationsLocked || updateInfo.installable !== true" @click="startUpdateDownload"><Download :size="15" />{{ t('update.download') }}</button>
             </div>
+            <p v-if="updateInfo?.update_available && updateInfo.installable !== true" class="text-input-error" role="alert">{{ t('update.checksumRequired') }}</p>
             <p class="field-hint">{{ t('update.privacyNote') }}</p>
           </section>
           <div class="save-bar"><span><LockKeyhole :size="14" />{{ t('settings.storage') }}</span><button class="button button-primary" :disabled="operationsLocked" @click="saveSettings"><LoaderCircle v-if="busy" :size="16" class="spin" /><Save v-else :size="16" />{{ busy ? t('settings.saving') : t('settings.save') }}</button></div>

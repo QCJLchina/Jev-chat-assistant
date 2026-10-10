@@ -164,7 +164,7 @@ def test_update_and_analysis_atomically_reserve_shared_progress(rig, monkeypatch
 
     monkeypatch.setattr(rig.progress, "phase", phase)
     updater = update_service.UpdateService(rig.progress)
-    updater.info = {"download_url": "https://release.test/update.zip", "latest_version": "test"}
+    updater.info = {"download_url": "https://release.test/update.zip", "latest_version": "test", "sha256": "a" * 64}
 
     def pending_download(*args, **kwargs):
         worker_entered.set()
